@@ -268,9 +268,10 @@ def main():
     parser.add_argument("--hubert_ckpt", type=str, default=DEFAULT_HUBERT_CKPT)
     parser.add_argument("--output_dir", type=str, default=DEFAULT_OUTPUT_DIR)
     parser.add_argument("--latent_dim", type=int, default=64)
-    parser.add_argument("--num_codes", type=int, default=256)
+    parser.add_argument("--num_codes", type=int, default=512)
     parser.add_argument("--vq_weight", type=float, default=1.0)
-    parser.add_argument("--entropy_weight", type=float, default=0.1)
+    parser.add_argument("--entropy_weight", type=float, default=0.5)
+    parser.add_argument("--reset_threshold", type=float, default=0.001)
     args = parser.parse_args()
 
     # Setup paths
@@ -310,7 +311,7 @@ def main():
 
     encoder = SimpleEncoder(input_dim=768, hidden_dim=512, latent_dim=args.latent_dim).to(device)
     decoder = SimpleDecoder(latent_dim=args.latent_dim, hidden_dim=512, output_dim=768).to(device)
-    vq = VectorQuantizer(num_codes=args.num_codes, codebook_dim=args.latent_dim).to(device)
+    vq = VectorQuantizer(num_codes=args.num_codes, codebook_dim=args.latent_dim, reset_threshold=args.reset_threshold).to(device)
 
     # Optimizer
     params = list(encoder.parameters()) + list(decoder.parameters()) + list(vq.parameters())
@@ -423,6 +424,10 @@ def main():
             scaler.update()
         else:
             optimizer.step()
+        
+        # Periodic codebook reset for dead codes
+        if global_step % 100 == 0:
+            vq.reset_dead_codes(z)
         
         global_step += 1
         optim_step += 1
