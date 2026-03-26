@@ -116,12 +116,14 @@ class BranchEncoder(nn.Module):
     """Encoder with separate semantic, prosody, speaker branches."""
     
     def __init__(self, input_dim=768, hidden_dim=512, 
-                 sem_dim=128, pro_dim=64, spk_dim=256):
+                 sem_dim=128, pro_dim=64, spk_dim=256,
+                 pro_temporal_compression=1):
         super().__init__()
         self.input_dim = input_dim
         self.sem_dim = sem_dim
         self.pro_dim = pro_dim
         self.spk_dim = spk_dim
+        self.pro_temporal_compression = pro_temporal_compression
         
         # Shared encoder for sem/pro
         self.shared = nn.Sequential(
@@ -141,7 +143,7 @@ class BranchEncoder(nn.Module):
             nn.Linear(hidden_dim // 2, sem_dim),
         )
         
-        # Prosody branch (temporal, slower variations)
+        # Prosody branch (temporal compression for efficiency)
         self.prosody = nn.Sequential(
             nn.Linear(hidden_dim, hidden_dim // 2),
             nn.LayerNorm(hidden_dim // 2),
@@ -150,8 +152,6 @@ class BranchEncoder(nn.Module):
         )
         
         # Speaker branch - TEMPORAL (not global pooling!)
-        # Each timestep gets a speaker code, then we pool at decode time
-        # This gives speaker much more capacity
         self.speaker_encoder = nn.Sequential(
             nn.Linear(input_dim, hidden_dim),
             nn.LayerNorm(hidden_dim),
@@ -168,13 +168,24 @@ class BranchEncoder(nn.Module):
             x: (B, T, 768) HuBERT features
         Returns:
             sem: (B, T, sem_dim) semantic features
-            pro: (B, T, pro_dim) prosody features  
-            spk: (B, T, spk_dim) temporal speaker features (pooled at decode)
+            pro: (B, T', pro_dim) prosody features (T' = T // compression)
+            spk: (B, T, spk_dim) temporal speaker features
         """
         # Shared path for sem/pro
         h = self.shared(x)
-        sem = self.semantic(h)
-        pro = self.prosody(h)
+        sem = self.semantic(h)  # (B, T, sem_dim)
+        
+        # Prosody with temporal compression
+        pro_full = self.prosody(h)  # (B, T, pro_dim)
+        if self.pro_temporal_compression > 1:
+            # Downsample by averaging frames
+            B, T, D = pro_full.shape
+            T_compressed = T // self.pro_temporal_compression
+            pro = pro_full[:, :T_compressed * self.pro_temporal_compression, :]
+            pro = pro.reshape(B, T_compressed, self.pro_temporal_compression, D)
+            pro = pro.mean(dim=2)  # (B, T', pro_dim)
+        else:
+            pro = pro_full
         
         # Speaker: temporal encoding (no pooling here)
         spk = self.speaker_encoder(x)  # (B, T, spk_dim)
@@ -186,8 +197,10 @@ class BranchDecoder(nn.Module):
     """Decoder that reconstructs from quantized sem/pro/spk."""
     
     def __init__(self, sem_dim=128, pro_dim=64, spk_dim=256, 
-                 hidden_dim=512, output_dim=768):
+                 hidden_dim=512, output_dim=768,
+                 pro_temporal_compression=1):
         super().__init__()
+        self.pro_temporal_compression = pro_temporal_compression
         total_dim = sem_dim + pro_dim + spk_dim
         
         self.net = nn.Sequential(
@@ -204,13 +217,20 @@ class BranchDecoder(nn.Module):
         """
         Args:
             sem_q: (B, T, sem_dim) quantized semantic
-            pro_q: (B, T, pro_dim) quantized prosody
-            spk_q: (B, T, spk_dim) or (B, spk_dim) quantized speaker
+            pro_q: (B, T', pro_dim) quantized prosody (T' may be < T)
+            spk_q: (B, T, spk_dim) quantized speaker
             target_len: optional, ignored (we use sem_q's T)
         Returns:
             x_recon: (B, T, 768) reconstructed features
         """
         B, T, _ = sem_q.shape
+        
+        # Upsample prosody if compressed
+        if self.pro_temporal_compression > 1 and pro_q.shape[1] < T:
+            # Simple nearest neighbor upsampling
+            pro_q = pro_q.transpose(1, 2)  # (B, D, T')
+            pro_q = F.interpolate(pro_q, size=T, mode='nearest')  # (B, D, T)
+            pro_q = pro_q.transpose(1, 2)  # (B, T, D)
         
         # Handle different speaker shapes
         if spk_q.dim() == 2:  # (B, spk_dim) global
@@ -295,6 +315,9 @@ def main():
     parser.add_argument("--spk_dim", type=int, default=256)
     parser.add_argument("--hidden_dim", type=int, default=512)
     
+    # Temporal compression (exp19: prosody at lower frame rate)
+    parser.add_argument("--pro_temporal_compression", type=int, default=1)  # 1=no compression, 2=2x, 4=4x, etc.
+    
     # VQ hyperparameters
     parser.add_argument("--num_codes", type=int, default=1024)  # Larger codebook
     parser.add_argument("--vq_weight", type=float, default=1.0)
@@ -341,12 +364,14 @@ def main():
 
     encoder = BranchEncoder(
         input_dim=768, hidden_dim=args.hidden_dim,
-        sem_dim=args.sem_dim, pro_dim=args.pro_dim, spk_dim=args.spk_dim
+        sem_dim=args.sem_dim, pro_dim=args.pro_dim, spk_dim=args.spk_dim,
+        pro_temporal_compression=args.pro_temporal_compression
     ).to(device)
     
     decoder = BranchDecoder(
         sem_dim=args.sem_dim, pro_dim=args.pro_dim, spk_dim=args.spk_dim,
-        hidden_dim=args.hidden_dim, output_dim=768
+        hidden_dim=args.hidden_dim, output_dim=768,
+        pro_temporal_compression=args.pro_temporal_compression
     ).to(device)
     
     # Separate VQ for each branch
