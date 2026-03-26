@@ -54,7 +54,7 @@ class VectorQuantizer(nn.Module):
         super().__init__()
         self.num_codes = num_codes
         self.codebook_dim = codebook_dim
-        self.beta = beta
+        self.beta = beta  # Commitment loss weight
         self.reset_threshold = reset_threshold
         
         self.embedding = nn.Embedding(num_codes, codebook_dim)
@@ -75,7 +75,9 @@ class VectorQuantizer(nn.Module):
         indices = torch.argmin(distances, dim=1)
         z_q = self.embedding(indices).reshape(z.shape)
         
+        # Commitment loss: encoder should output vectors close to codebook
         commit_loss = F.mse_loss(z_q.detach(), z) * self.beta
+        # Codebook loss: codebook should move towards encoder outputs
         codebook_loss = F.mse_loss(z_q, z.detach())
         vq_loss = commit_loss + codebook_loss
         
@@ -321,6 +323,7 @@ def main():
     # VQ hyperparameters
     parser.add_argument("--num_codes", type=int, default=1024)  # Larger codebook
     parser.add_argument("--vq_weight", type=float, default=1.0)
+    parser.add_argument("--commitment_beta", type=float, default=0.25)  # VQ commitment loss weight
     parser.add_argument("--entropy_weight", type=float, default=1.0)  # Higher for all
     parser.add_argument("--entropy_weight_spk", type=float, default=5.0)  # Much higher for speaker
     parser.add_argument("--reset_threshold", type=float, default=0.0005)  # Reset dead codes sooner
@@ -375,12 +378,12 @@ def main():
     ).to(device)
     
     # Separate VQ for each branch
-    sem_vq = VectorQuantizer(num_codes=args.num_codes, codebook_dim=args.sem_dim, 
-                             reset_threshold=args.reset_threshold).to(device)
+    sem_vq = VectorQuantizer(num_codes=args.num_codes, codebook_dim=args.sem_dim,
+                             beta=args.commitment_beta, reset_threshold=args.reset_threshold).to(device)
     pro_vq = VectorQuantizer(num_codes=args.num_codes, codebook_dim=args.pro_dim,
-                             reset_threshold=args.reset_threshold).to(device)
+                             beta=args.commitment_beta, reset_threshold=args.reset_threshold).to(device)
     spk_vq = VectorQuantizer(num_codes=args.num_codes, codebook_dim=args.spk_dim,
-                             reset_threshold=args.reset_threshold).to(device)
+                             beta=args.commitment_beta, reset_threshold=args.reset_threshold).to(device)
 
     # Optimizer
     params = (list(encoder.parameters()) + list(decoder.parameters()) + 
