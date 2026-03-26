@@ -119,13 +119,14 @@ class BranchEncoder(nn.Module):
     
     def __init__(self, input_dim=768, hidden_dim=512, 
                  sem_dim=128, pro_dim=64, spk_dim=256,
-                 pro_temporal_compression=1):
+                 pro_temporal_compression=1, speaker_mode="temporal"):
         super().__init__()
         self.input_dim = input_dim
         self.sem_dim = sem_dim
         self.pro_dim = pro_dim
         self.spk_dim = spk_dim
         self.pro_temporal_compression = pro_temporal_compression
+        self.speaker_mode = speaker_mode
         
         # Shared encoder for sem/pro
         self.shared = nn.Sequential(
@@ -153,16 +154,31 @@ class BranchEncoder(nn.Module):
             nn.Linear(hidden_dim // 2, pro_dim),
         )
         
-        # Speaker branch - TEMPORAL (not global pooling!)
-        self.speaker_encoder = nn.Sequential(
-            nn.Linear(input_dim, hidden_dim),
-            nn.LayerNorm(hidden_dim),
-            nn.GELU(),
-            nn.Linear(hidden_dim, hidden_dim),
-            nn.LayerNorm(hidden_dim),
-            nn.GELU(),
-            nn.Linear(hidden_dim, spk_dim),
-        )
+        # Speaker branch
+        if speaker_mode == "global":
+            # Global speaker: attention pooling to single vector
+            self.speaker_encoder = nn.Sequential(
+                nn.Linear(input_dim, hidden_dim),
+                nn.LayerNorm(hidden_dim),
+                nn.GELU(),
+                nn.Linear(hidden_dim, hidden_dim),
+                nn.LayerNorm(hidden_dim),
+                nn.GELU(),
+                nn.Linear(hidden_dim, spk_dim),
+            )
+            # Attention pooling
+            self.speaker_attn = nn.Linear(hidden_dim, 1)
+        else:
+            # Temporal speaker: per-frame codes
+            self.speaker_encoder = nn.Sequential(
+                nn.Linear(input_dim, hidden_dim),
+                nn.LayerNorm(hidden_dim),
+                nn.GELU(),
+                nn.Linear(hidden_dim, hidden_dim),
+                nn.LayerNorm(hidden_dim),
+                nn.GELU(),
+                nn.Linear(hidden_dim, spk_dim),
+            )
         
     def forward(self, x):
         """
@@ -171,7 +187,7 @@ class BranchEncoder(nn.Module):
         Returns:
             sem: (B, T, sem_dim) semantic features
             pro: (B, T', pro_dim) prosody features (T' = T // compression)
-            spk: (B, T, spk_dim) temporal speaker features
+            spk: (B, T, spk_dim) temporal OR (B, spk_dim) global speaker
         """
         # Shared path for sem/pro
         h = self.shared(x)
@@ -189,8 +205,15 @@ class BranchEncoder(nn.Module):
         else:
             pro = pro_full
         
-        # Speaker: temporal encoding (no pooling here)
-        spk = self.speaker_encoder(x)  # (B, T, spk_dim)
+        # Speaker: temporal or global
+        if self.speaker_mode == "global":
+            # Attention-weighted pooling
+            h_spk = self.speaker_encoder(x)  # (B, T, spk_dim)
+            attn = torch.softmax(self.speaker_attn(h_spk), dim=1)  # (B, T, 1)
+            spk = torch.sum(h_spk * attn, dim=1)  # (B, spk_dim)
+        else:
+            # Temporal: per-frame speaker codes
+            spk = self.speaker_encoder(x)  # (B, T, spk_dim)
         
         return sem, pro, spk
 
@@ -200,9 +223,10 @@ class BranchDecoder(nn.Module):
     
     def __init__(self, sem_dim=128, pro_dim=64, spk_dim=256, 
                  hidden_dim=512, output_dim=768,
-                 pro_temporal_compression=1):
+                 pro_temporal_compression=1, speaker_mode="temporal"):
         super().__init__()
         self.pro_temporal_compression = pro_temporal_compression
+        self.speaker_mode = speaker_mode
         total_dim = sem_dim + pro_dim + spk_dim
         
         self.net = nn.Sequential(
@@ -220,7 +244,7 @@ class BranchDecoder(nn.Module):
         Args:
             sem_q: (B, T, sem_dim) quantized semantic
             pro_q: (B, T', pro_dim) quantized prosody (T' may be < T)
-            spk_q: (B, T, spk_dim) quantized speaker
+            spk_q: (B, T, spk_dim) temporal OR (B, spk_dim) global speaker
             target_len: optional, ignored (we use sem_q's T)
         Returns:
             x_recon: (B, T, 768) reconstructed features
@@ -291,13 +315,17 @@ def _set_lr(optimizer, base_lr, progress):
 
 class SimpleFactorizer(nn.Module):
     """Wrapper to make BranchEncoder compatible with prepare.py eval."""
-    def __init__(self, encoder):
+    def __init__(self, encoder, speaker_mode="temporal"):
         super().__init__()
         self.encoder = encoder
+        self.speaker_mode = speaker_mode
     def forward(self, h, c):
         sem, pro, spk = self.encoder(h)
-        # prepare.py expects spk to be (B, 1, T, spk_dim) for some reason
-        # Return as (B, T, spk_dim) which decoder handles
+        # prepare.py expects spk to be (B, T, spk_dim)
+        if self.speaker_mode == "global":
+            # Expand global speaker to temporal
+            B, T, _ = sem.shape
+            spk = spk.unsqueeze(1).expand(-1, T, -1)  # (B, T, spk_dim)
         return sem, pro, spk
 
 
@@ -319,6 +347,9 @@ def main():
     
     # Temporal compression (exp19: prosody at lower frame rate)
     parser.add_argument("--pro_temporal_compression", type=int, default=1)  # 1=no compression, 2=2x, 4=4x, etc.
+    
+    # Speaker mode: "temporal" (per-frame, high quality) or "global" (per-utterance, low bitrate)
+    parser.add_argument("--speaker_mode", type=str, default="temporal", choices=["temporal", "global"])
     
     # VQ hyperparameters
     parser.add_argument("--num_codes", type=int, default=1024)  # Larger codebook
@@ -368,13 +399,15 @@ def main():
     encoder = BranchEncoder(
         input_dim=768, hidden_dim=args.hidden_dim,
         sem_dim=args.sem_dim, pro_dim=args.pro_dim, spk_dim=args.spk_dim,
-        pro_temporal_compression=args.pro_temporal_compression
+        pro_temporal_compression=args.pro_temporal_compression,
+        speaker_mode=args.speaker_mode
     ).to(device)
     
     decoder = BranchDecoder(
         sem_dim=args.sem_dim, pro_dim=args.pro_dim, spk_dim=args.spk_dim,
         hidden_dim=args.hidden_dim, output_dim=768,
-        pro_temporal_compression=args.pro_temporal_compression
+        pro_temporal_compression=args.pro_temporal_compression,
+        speaker_mode=args.speaker_mode
     ).to(device)
     
     # Separate VQ for each branch
@@ -455,8 +488,15 @@ def main():
             # Quantize each branch
             sem_q, sem_vq_loss, sem_idx, sem_entropy = sem_vq(sem)
             pro_q, pro_vq_loss, pro_idx, pro_entropy = pro_vq(pro)
-            # Speaker is now temporal (B, T, D) - quantize per timestep
-            spk_q, spk_vq_loss, spk_idx, spk_entropy = spk_vq(spk)
+            
+            # Speaker quantization - handle global vs temporal
+            if args.speaker_mode == "global":
+                # Global speaker: (B, spk_dim) - add dummy dim for VQ
+                spk_q, spk_vq_loss, spk_idx, spk_entropy = spk_vq(spk.unsqueeze(1))
+                spk_q = spk_q.squeeze(1)  # (B, spk_dim)
+            else:
+                # Temporal speaker: (B, T, spk_dim)
+                spk_q, spk_vq_loss, spk_idx, spk_entropy = spk_vq(spk)
             
             # Decode
             h_recon = decoder(sem_q, pro_q, spk_q)
@@ -513,7 +553,11 @@ def main():
         if global_step % 100 == 0:
             sem_vq.reset_dead_codes(sem)
             pro_vq.reset_dead_codes(pro)
-            spk_vq.reset_dead_codes(spk)  # Now temporal, no unsqueeze needed
+            # Handle global vs temporal speaker
+            if args.speaker_mode == "global":
+                spk_vq.reset_dead_codes(spk.unsqueeze(1))
+            else:
+                spk_vq.reset_dead_codes(spk)
         
         global_step += 1
         optim_step += 1
@@ -567,7 +611,10 @@ def main():
             
             _, _, sem_idx, _ = sem_vq(sem)
             _, _, pro_idx, _ = pro_vq(pro)
-            _, _, spk_idx, _ = spk_vq(spk)  # Temporal now
+            if args.speaker_mode == "global":
+                _, _, spk_idx, _ = spk_vq(spk.unsqueeze(1))
+            else:
+                _, _, spk_idx, _ = spk_vq(spk)
             
             sem_all.append(sem_idx.flatten())
             pro_all.append(pro_idx.flatten())
@@ -593,7 +640,7 @@ def main():
     # Full validation evaluation using prepare.py helpers
     print("  Running full validation...")
     
-    fac_for_eval = SimpleFactorizer(encoder).to(device)
+    fac_for_eval = SimpleFactorizer(encoder, speaker_mode=args.speaker_mode).to(device)
     fac_for_eval.eval()
     
     # Use prepare.py's evaluate_vqvae_val
