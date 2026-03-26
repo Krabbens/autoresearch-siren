@@ -1,11 +1,11 @@
 """
-SIREN VQ-VAE Phase 1 — Simplified architecture that actually works.
+SIREN VQ-VAE Phase 1 — Improved architecture with separate branches.
 
-Key changes from broken SIREN V8:
-1. Single quantizer branch (not 3 separate sem/pro/spk)
-2. Standard Vector Quantization with codebook reset
-3. Explicit entropy regularization (additive, not subtracted!)
-4. Simple linear encoder/decoder - no complex branching
+Building on exp14's success, this version:
+1. Re-introduces sem/pro/spk branches (but with working VQ, not broken FSQ)
+2. Proper speech metrics via prepare.py helpers
+3. Larger latent dimensions for better reconstruction
+4. Full validation set evaluation
 
 Usage: uv run train.py
 """
@@ -44,127 +44,117 @@ from ultra_low_bitrate_codec.models.bithubert import BitHuBERT
 
 
 # ---------------------------------------------------------------------------
-# Simple Vector Quantizer with codebook reset
+# Vector Quantizer with codebook reset
 # ---------------------------------------------------------------------------
 
 class VectorQuantizer(nn.Module):
-    """
-    Vector Quantizer with:
-    - Commitment loss (encoder output should match codebook)
-    - Codebook reset for dead codes
-    - Entropy tracking for monitoring
-    """
-    def __init__(self, num_codes, codebook_dim, beta=0.25, reset_threshold=0.01):
+    """Vector Quantizer with commitment loss and codebook reset."""
+    
+    def __init__(self, num_codes, codebook_dim, beta=0.25, reset_threshold=0.001):
         super().__init__()
         self.num_codes = num_codes
         self.codebook_dim = codebook_dim
         self.beta = beta
         self.reset_threshold = reset_threshold
         
-        # Codebook
         self.embedding = nn.Embedding(num_codes, codebook_dim)
         self.embedding.weight.data.uniform_(-1.0 / num_codes, 1.0 / num_codes)
         
-        # EMA tracking for codebook usage
         self.register_buffer("ema_count", torch.ones(num_codes))
         self.register_buffer("ema_weight", self.embedding.weight.data.clone())
         
     def forward(self, z):
-        """
-        Args:
-            z: (B, T, D) encoder outputs
-        Returns:
-            z_q: quantized output (with STE gradient)
-            commit_loss: commitment loss
-            indices: code indices
-            entropy_bits: entropy of code usage (for monitoring)
-        """
         B, T, D = z.shape
-        
-        # Flatten for quantization
         z_flat = z.reshape(-1, D)
         
-        # Find nearest codebook entry
         distances = (
             torch.sum(z_flat ** 2, dim=1, keepdim=True) 
             + torch.sum(self.embedding.weight ** 2, dim=1)
             - 2 * torch.matmul(z_flat, self.embedding.weight.t())
         )
         indices = torch.argmin(distances, dim=1)
-        
-        # Get quantized vectors
         z_q = self.embedding(indices).reshape(z.shape)
         
-        # Commitment loss: encoder should output vectors close to codebook
         commit_loss = F.mse_loss(z_q.detach(), z) * self.beta
-        
-        # Codebook loss: codebook should move towards encoder outputs
         codebook_loss = F.mse_loss(z_q, z.detach())
-        
-        # Total VQ loss
         vq_loss = commit_loss + codebook_loss
         
-        # Straight-through estimator
         z_q = z + (z_q - z).detach()
         
-        # Track usage for codebook reset
         if self.training:
             self._update_usage(indices)
         
-        # Compute entropy for monitoring
         entropy_bits = self._compute_entropy(indices)
-        
         return z_q, vq_loss, indices, entropy_bits
     
     def _update_usage(self, indices):
-        """Update EMA usage counts for codebook reset."""
         counts = torch.bincount(indices.flatten(), minlength=self.num_codes)
         self.ema_count = 0.99 * self.ema_count + 0.01 * counts.float()
         
     def _compute_entropy(self, indices):
-        """Compute entropy of code usage in bits."""
         counts = torch.bincount(indices.flatten(), minlength=self.num_codes).float()
         probs = counts / (counts.sum() + 1e-10)
         probs = probs[probs > 0]
-        entropy = -(probs * torch.log2(probs)).sum()
-        return entropy.item()
+        return -(probs * torch.log2(probs)).sum().item()
     
     def reset_dead_codes(self, z):
-        """Reset unused codes to random encoder outputs."""
         if self.ema_count.min() < self.reset_threshold:
             dead_mask = self.ema_count < self.reset_threshold
             num_dead = dead_mask.sum().item()
-            
-            # Sample random encoder outputs to replace dead codes
-            z_flat = z.reshape(-1, self.codebook_dim).float()  # Ensure float32
+            z_flat = z.reshape(-1, self.codebook_dim).float()
             rand_idx = torch.randint(0, len(z_flat), (num_dead,), device=z.device)
-            
             with torch.no_grad():
                 self.embedding.weight[dead_mask] = z_flat[rand_idx].to(self.embedding.weight.dtype)
                 self.ema_count[dead_mask] = 1.0
 
 
 # ---------------------------------------------------------------------------
-# Simple Encoder and Decoder
+# Encoder and Decoder with separate branches
 # ---------------------------------------------------------------------------
 
-class SimpleEncoder(nn.Module):
-    """Simple MLP encoder that projects HuBERT features to latent space."""
+class BranchEncoder(nn.Module):
+    """Encoder with separate semantic, prosody, speaker branches."""
     
-    def __init__(self, input_dim=768, hidden_dim=512, latent_dim=64):
+    def __init__(self, input_dim=768, hidden_dim=512, 
+                 sem_dim=128, pro_dim=64, spk_dim=256):
         super().__init__()
         self.input_dim = input_dim
-        self.hidden_dim = hidden_dim
-        self.latent_dim = latent_dim
+        self.sem_dim = sem_dim
+        self.pro_dim = pro_dim
+        self.spk_dim = spk_dim
         
-        self.net = nn.Sequential(
+        # Shared encoder
+        self.shared = nn.Sequential(
             nn.Linear(input_dim, hidden_dim),
             nn.LayerNorm(hidden_dim),
             nn.GELU(),
             nn.Linear(hidden_dim, hidden_dim),
             nn.LayerNorm(hidden_dim),
             nn.GELU(),
-            nn.Linear(hidden_dim, latent_dim),
+        )
+        
+        # Semantic branch (temporal, fine-grained)
+        self.semantic = nn.Sequential(
+            nn.Linear(hidden_dim, hidden_dim // 2),
+            nn.LayerNorm(hidden_dim // 2),
+            nn.GELU(),
+            nn.Linear(hidden_dim // 2, sem_dim),
+        )
+        
+        # Prosody branch (temporal, slower variations)
+        self.prosody = nn.Sequential(
+            nn.Linear(hidden_dim, hidden_dim // 2),
+            nn.LayerNorm(hidden_dim // 2),
+            nn.GELU(),
+            nn.Linear(hidden_dim // 2, pro_dim),
+        )
+        
+        # Speaker branch (global, pooled)
+        self.speaker = nn.Sequential(
+            nn.Linear(hidden_dim, hidden_dim // 2),
+            nn.LayerNorm(hidden_dim // 2),
+            nn.GELU(),
+            nn.Linear(hidden_dim // 2, spk_dim),
         )
         
     def forward(self, x):
@@ -172,22 +162,30 @@ class SimpleEncoder(nn.Module):
         Args:
             x: (B, T, 768) HuBERT features
         Returns:
-            z: (B, T, latent_dim) latent features
+            sem: (B, T, sem_dim) semantic features
+            pro: (B, T, pro_dim) prosody features
+            spk: (B, spk_dim) global speaker embedding
         """
-        return self.net(x)
+        h = self.shared(x)
+        sem = self.semantic(h)
+        pro = self.prosody(h)
+        
+        # Speaker: global pooling
+        spk = self.speaker(h.mean(dim=1))  # (B, spk_dim)
+        
+        return sem, pro, spk
 
 
-class SimpleDecoder(nn.Module):
-    """Simple MLP decoder that reconstructs HuBERT features from quantized latents."""
+class BranchDecoder(nn.Module):
+    """Decoder that reconstructs from quantized sem/pro/spk."""
     
-    def __init__(self, latent_dim=64, hidden_dim=512, output_dim=768):
+    def __init__(self, sem_dim=128, pro_dim=64, spk_dim=256, 
+                 hidden_dim=512, output_dim=768):
         super().__init__()
-        self.latent_dim = latent_dim
-        self.hidden_dim = hidden_dim
-        self.output_dim = output_dim
+        total_dim = sem_dim + pro_dim + spk_dim
         
         self.net = nn.Sequential(
-            nn.Linear(latent_dim, hidden_dim),
+            nn.Linear(total_dim, hidden_dim),
             nn.LayerNorm(hidden_dim),
             nn.GELU(),
             nn.Linear(hidden_dim, hidden_dim),
@@ -196,42 +194,41 @@ class SimpleDecoder(nn.Module):
             nn.Linear(hidden_dim, output_dim),
         )
         
-    def forward(self, z_q):
+    def forward(self, sem_q, pro_q, spk_q):
         """
         Args:
-            z_q: (B, T, latent_dim) quantized latents
+            sem_q: (B, T, sem_dim) quantized semantic
+            pro_q: (B, T, pro_dim) quantized prosody
+            spk_q: (B, spk_dim) quantized speaker
         Returns:
             x_recon: (B, T, 768) reconstructed features
         """
-        return self.net(z_q)
+        # Expand speaker to match temporal dimension
+        B, T, _ = sem_q.shape
+        spk_expanded = spk_q.unsqueeze(1).expand(-1, T, -1)
+        
+        # Concatenate and decode
+        combined = torch.cat([sem_q, pro_q, spk_expanded], dim=-1)
+        return self.net(combined)
 
 
 # ---------------------------------------------------------------------------
 # Entropy Regularization
 # ---------------------------------------------------------------------------
 
-def entropy_bonus(indices, num_codes, target_entropy=None):
-    """
-    Add bonus for high entropy code usage.
-    
-    Unlike the broken SIREN diversity term, this is ADDED to loss
-    when entropy is BELOW target, encouraging more code usage.
-    """
+def entropy_bonus(indices, num_codes, target_entropy=None, weight=0.1):
+    """Add bonus for high entropy code usage."""
     counts = torch.bincount(indices.flatten(), minlength=num_codes).float()
     probs = counts / (counts.sum() + 1e-10)
-    
-    # Compute current entropy
     probs_nonzero = probs[probs > 0]
     current_entropy = -(probs_nonzero * torch.log2(probs_nonzero)).sum()
     
-    # Target entropy (default: 80% of maximum)
     if target_entropy is None:
         target_entropy = 0.8 * math.log2(num_codes)
     
-    # Penalize low entropy
     if current_entropy < target_entropy:
-        return (target_entropy - current_entropy) * 0.01
-    return current_entropy * 0.0  # No bonus if already above target
+        return (target_entropy - current_entropy) * weight
+    return current_entropy * 0.0
 
 
 # ---------------------------------------------------------------------------
@@ -239,7 +236,6 @@ def entropy_bonus(indices, num_codes, target_entropy=None):
 # ---------------------------------------------------------------------------
 
 def get_lr_multiplier(progress: float) -> float:
-    """Linear warmup, constant, then cosine decay."""
     WARMUP_RATIO = 0.05
     WARMDOWN_RATIO = 0.1
     FINAL_LR_FRAC = 0.1
@@ -258,8 +254,21 @@ def _set_lr(optimizer, base_lr, progress):
         g["lr"] = base_lr * m
 
 
+class SimpleFactorizer(nn.Module):
+    """Wrapper to make BranchEncoder compatible with prepare.py eval."""
+    def __init__(self, encoder):
+        super().__init__()
+        self.encoder = encoder
+    def forward(self, h, c):
+        sem, pro, spk = self.encoder(h)
+        # Expand speaker to match temporal dim for eval compatibility
+        B, T, _ = sem.shape
+        spk_expanded = spk.unsqueeze(1).expand(-1, T, -1)
+        return sem, pro, spk_expanded
+
+
 def main():
-    parser = argparse.ArgumentParser(description="Simplified VQ-VAE for autoresearch")
+    parser = argparse.ArgumentParser(description="Improved VQ-VAE with branches")
     parser.add_argument("--data_dir", default=DEFAULT_DATA_DIR)
     parser.add_argument("--val_data_dir", default=DEFAULT_VAL_DATA_DIR)
     parser.add_argument("--resume_ckpt", default=None)
@@ -267,11 +276,19 @@ def main():
     parser.add_argument("--lr", type=float, default=1e-4)
     parser.add_argument("--hubert_ckpt", type=str, default=DEFAULT_HUBERT_CKPT)
     parser.add_argument("--output_dir", type=str, default=DEFAULT_OUTPUT_DIR)
-    parser.add_argument("--latent_dim", type=int, default=64)
+    
+    # Architecture hyperparameters
+    parser.add_argument("--sem_dim", type=int, default=128)
+    parser.add_argument("--pro_dim", type=int, default=64)
+    parser.add_argument("--spk_dim", type=int, default=256)
+    parser.add_argument("--hidden_dim", type=int, default=512)
+    
+    # VQ hyperparameters
     parser.add_argument("--num_codes", type=int, default=512)
     parser.add_argument("--vq_weight", type=float, default=1.0)
     parser.add_argument("--entropy_weight", type=float, default=0.5)
     parser.add_argument("--reset_threshold", type=float, default=0.001)
+    
     args = parser.parse_args()
 
     # Setup paths
@@ -309,12 +326,27 @@ def main():
     hubert = BitHuBERT(hidden_dim=384, output_dim=768, num_layers=12).to(device).eval()
     hubert.load_state_dict(torch.load(hubert_ckpt, map_location=device))
 
-    encoder = SimpleEncoder(input_dim=768, hidden_dim=512, latent_dim=args.latent_dim).to(device)
-    decoder = SimpleDecoder(latent_dim=args.latent_dim, hidden_dim=512, output_dim=768).to(device)
-    vq = VectorQuantizer(num_codes=args.num_codes, codebook_dim=args.latent_dim, reset_threshold=args.reset_threshold).to(device)
+    encoder = BranchEncoder(
+        input_dim=768, hidden_dim=args.hidden_dim,
+        sem_dim=args.sem_dim, pro_dim=args.pro_dim, spk_dim=args.spk_dim
+    ).to(device)
+    
+    decoder = BranchDecoder(
+        sem_dim=args.sem_dim, pro_dim=args.pro_dim, spk_dim=args.spk_dim,
+        hidden_dim=args.hidden_dim, output_dim=768
+    ).to(device)
+    
+    # Separate VQ for each branch
+    sem_vq = VectorQuantizer(num_codes=args.num_codes, codebook_dim=args.sem_dim, 
+                             reset_threshold=args.reset_threshold).to(device)
+    pro_vq = VectorQuantizer(num_codes=args.num_codes, codebook_dim=args.pro_dim,
+                             reset_threshold=args.reset_threshold).to(device)
+    spk_vq = VectorQuantizer(num_codes=args.num_codes, codebook_dim=args.spk_dim,
+                             reset_threshold=args.reset_threshold).to(device)
 
     # Optimizer
-    params = list(encoder.parameters()) + list(decoder.parameters()) + list(vq.parameters())
+    params = (list(encoder.parameters()) + list(decoder.parameters()) + 
+              list(sem_vq.parameters()) + list(pro_vq.parameters()) + list(spk_vq.parameters()))
     optimizer = torch.optim.AdamW(params, lr=base_lr, weight_decay=weight_decay)
     
     # AMP
@@ -322,12 +354,12 @@ def main():
     scaler = torch_amp.GradScaler("cuda", enabled=use_amp)
 
     # Training loop
-    steps_per_epoch = max(1, len(train_loader))
     global_step = 0
     optim_step = 0
     
-    print("Simplified VQ-VAE (autoresearch)")
-    print(f"  latent_dim: {args.latent_dim}, num_codes: {args.num_codes}")
+    print("Improved VQ-VAE with branches (autoresearch)")
+    print(f"  sem_dim={args.sem_dim}, pro_dim={args.pro_dim}, spk_dim={args.spk_dim}")
+    print(f"  num_codes={args.num_codes}, entropy_weight={args.entropy_weight}")
     print(f"  TIME_BUDGET: {TIME_BUDGET}s (wall after step {WARMUP_TRAINING_STEPS})")
     print(f"  train wavs: {len(train_paths)}, val wavs: {len(val_paths)}")
     print(f"  device: {device}, amp={use_amp}")
@@ -359,7 +391,9 @@ def main():
 
         encoder.train()
         decoder.train()
-        vq.train()
+        sem_vq.train()
+        pro_vq.train()
+        spk_vq.train()
 
         wav = _next_wav()
         wav = wav.to(device, non_blocking=True)
@@ -375,22 +409,30 @@ def main():
         
         with amp_ctx:
             # Encode
-            z = encoder(h_feats)
+            sem, pro, spk = encoder(h_feats)
             
-            # Quantize
-            z_q, vq_loss, indices, entropy_bits = vq(z)
+            # Quantize each branch
+            sem_q, sem_vq_loss, sem_idx, sem_entropy = sem_vq(sem)
+            pro_q, pro_vq_loss, pro_idx, pro_entropy = pro_vq(pro)
+            spk_q, spk_vq_loss, spk_idx, spk_entropy = spk_vq(spk.unsqueeze(1))
+            spk_q = spk_q.squeeze(1)  # (B, spk_dim)
             
             # Decode
-            h_recon = decoder(z_q)
+            h_recon = decoder(sem_q, pro_q, spk_q)
             
             # Reconstruction loss
             recon_loss = F.mse_loss(h_recon, h_feats)
             
-            # Entropy bonus (encourage code usage)
-            ent_bonus = entropy_bonus(indices, args.num_codes)
+            # Total VQ loss
+            total_vq_loss = sem_vq_loss + pro_vq_loss + spk_vq_loss
+            
+            # Entropy bonuses (encourage code usage in each branch)
+            sem_ent_bonus = entropy_bonus(sem_idx, args.num_codes, weight=args.entropy_weight)
+            pro_ent_bonus = entropy_bonus(pro_idx, args.num_codes, weight=args.entropy_weight)
+            spk_ent_bonus = entropy_bonus(spk_idx, args.num_codes, weight=args.entropy_weight)
             
             # Total loss
-            raw_loss = recon_loss + args.vq_weight * vq_loss + args.entropy_weight * ent_bonus
+            raw_loss = recon_loss + args.vq_weight * total_vq_loss + sem_ent_bonus + pro_ent_bonus + spk_ent_bonus
 
         loss_scaled = raw_loss
         
@@ -425,9 +467,11 @@ def main():
         else:
             optimizer.step()
         
-        # Periodic codebook reset for dead codes
+        # Periodic codebook reset
         if global_step % 100 == 0:
-            vq.reset_dead_codes(z)
+            sem_vq.reset_dead_codes(sem)
+            pro_vq.reset_dead_codes(pro)
+            spk_vq.reset_dead_codes(spk.unsqueeze(1))
         
         global_step += 1
         optim_step += 1
@@ -439,10 +483,12 @@ def main():
         deb = smooth_loss / (1.0 - ema_beta ** min(optim_step, 10**9))
         rem = max(0.0, TIME_BUDGET - total_training_time)
         
+        avg_entropy = (sem_entropy + pro_entropy + spk_entropy) / 3
+        
         print(
             f"\rstep {optim_step:05d} ({100 * progress:.1f}%) | "
             f"loss: {deb:.4f} | recon: {recon_loss.item():.4f} | "
-            f"vq: {vq_loss.item():.4f} | H: {entropy_bits:.2f} | "
+            f"vq: {total_vq_loss.item():.4f} | H: {avg_entropy:.2f} | "
             f"dt: {dt * 1000:.0f}ms | rem: {rem:.0f}s ",
             end="", flush=True
         )
@@ -457,13 +503,15 @@ def main():
 
     print(flush=True)
 
-    # Code usage stats
-    vq.eval()
+    # Code usage stats per branch
+    sem_vq.eval()
+    pro_vq.eval()
+    spk_vq.eval()
     encoder.eval()
     decoder.eval()
     
     with torch.no_grad():
-        all_indices = []
+        sem_all, pro_all, spk_all = [], [], []
         for batch_idx, wav_path in enumerate(train_paths[:batch_size * 4]):
             import soundfile as sf
             wav_np, _ = sf.read(wav_path)
@@ -473,90 +521,71 @@ def main():
             wav_b = wav_t.unsqueeze(0).unsqueeze(1)
             
             h_feats, _ = hubert(wav_b)
-            z = encoder(h_feats)
-            _, _, indices, _ = vq(z)
-            all_indices.append(indices.flatten())
+            sem, pro, spk = encoder(h_feats)
+            
+            _, _, sem_idx, _ = sem_vq(sem)
+            _, _, pro_idx, _ = pro_vq(pro)
+            _, _, spk_idx, _ = spk_vq(spk.unsqueeze(1))
+            
+            sem_all.append(sem_idx.flatten())
+            pro_all.append(pro_idx.flatten())
+            spk_all.append(spk_idx.flatten())
         
-        all_indices = torch.cat(all_indices, dim=0)
-        counts = torch.bincount(all_indices, minlength=args.num_codes)
-        num_used = (counts > 0).sum().item()
-        max_entropy = math.log2(args.num_codes)
-        actual_entropy = -(counts[counts > 0].float() / counts.sum()) * torch.log2(
-            counts[counts > 0].float() / counts.sum() + 1e-10
-        )
-        actual_entropy = actual_entropy.sum().item()
+        sem_all = torch.cat(sem_all, dim=0)
+        pro_all = torch.cat(pro_all, dim=0)
+        spk_all = torch.cat(spk_all, dim=0)
         
-    print(f"  Code stats (train):")
-    print(f"    Used codes: {num_used}/{args.num_codes} ({100*num_used/args.num_codes:.1f}%)")
-    print(f"    Entropy: {actual_entropy:.2f} bits (max {max_entropy:.2f})")
+        def branch_stats(indices, name):
+            counts = torch.bincount(indices, minlength=args.num_codes)
+            num_used = (counts > 0).sum().item()
+            probs = counts.float() / counts.sum()
+            entropy = -(probs[probs > 0] * torch.log2(probs[probs > 0]) + 1e-10).sum().item()
+            print(f"    {name}: {num_used}/{args.num_codes} ({100*num_used/args.num_codes:.1f}%), H={entropy:.2f} bits")
+            return num_used, entropy
+        
+        print(f"  Code stats (train):")
+        sem_used, sem_h = branch_stats(sem_all, "Sem")
+        pro_used, pro_h = branch_stats(pro_all, "Pro")
+        spk_used, spk_h = branch_stats(spk_all, "Spk")
 
-    # Validation
-    print("  Running validation...")
+    # Full validation evaluation using prepare.py helpers
+    print("  Running full validation...")
     
-    # Simple validation MSE
-    val_mse = 0.0
-    val_count = 0
-    with torch.no_grad():
-        for wav_path in val_paths[:100]:
-            import soundfile as sf
-            wav_np, _ = sf.read(wav_path)
-            wav_t = torch.tensor(wav_np, dtype=torch.float32).to(device)
-            if wav_t.shape[0] > 4 * 16000:
-                wav_t = wav_t[:4 * 16000]
-            wav_b = wav_t.unsqueeze(0).unsqueeze(1)
-            
-            h_feats, _ = hubert(wav_b)
-            z = encoder(h_feats)
-            z_q, _, indices, _ = vq(z)
-            h_recon = decoder(z_q)
-            
-            mse = F.mse_loss(h_recon, h_feats).item()
-            val_mse += mse
-            val_count += 1
+    fac_for_eval = SimpleFactorizer(encoder).to(device)
+    fac_for_eval.eval()
     
-    val_mse /= max(1, val_count)
+    # Use prepare.py's evaluate_vqvae_val
+    hp = {"fsq_sem_input_scale": 1.0, "fsq_pro_input_scale": 1.0, "fsq_input_scale": 1.0}
     
-    # Speech metrics (proxy via Griffin-Lim)
-    val_pesq_wb = float('nan')
-    val_stoi = float('nan')
-    speech_metrics_n = 0
-    try:
-        # Create wrapper for prepare.evaluate_vqvae_val interface
-        class SimpleFactorizer(nn.Module):
-            def __init__(self, encoder):
-                super().__init__()
-                self.encoder = encoder
-            def forward(self, h, c):
-                z = self.encoder(h)
-                # Return semantic, prosody, speaker (all same for simple version)
-                return z, z, torch.zeros(h.shape[0], 256).to(h.device)
-        
-        fac = SimpleFactorizer(encoder).to(device)
-        fac.eval()
-        
-        speech = measure_speech_pesq_stoi(
-            val_paths[:12], hubert, fac, decoder, vq, vq, vq, device, {}, use_amp
-        )
-        val_pesq_wb = speech.get('val_pesq_wb', float('nan'))
-        val_stoi = speech.get('val_stoi', float('nan'))
-        speech_metrics_n = speech.get('speech_metrics_n', 0)
-    except Exception as e:
-        print(f"  Speech metrics failed: {e}")
+    val_metrics = evaluate_vqvae_val(
+        hubert, fac_for_eval, decoder, sem_vq, pro_vq, spk_vq,
+        val_loader, device, hp, use_amp, stats_batches=16
+    )
+    
+    # Speech metrics
+    speech = measure_speech_pesq_stoi(
+        val_paths[:12], hubert, fac_for_eval, decoder, sem_vq, pro_vq, spk_vq,
+        device, hp, use_amp
+    )
 
     # Save checkpoint
     ckpt_payload = {
         "encoder": encoder.state_dict(),
         "decoder": decoder.state_dict(),
-        "vq": vq.state_dict(),
+        "sem_vq": sem_vq.state_dict(),
+        "pro_vq": pro_vq.state_dict(),
+        "spk_vq": spk_vq.state_dict(),
         "optimizer": optimizer.state_dict(),
         "global_step": global_step,
         "config": {
-            "latent_dim": args.latent_dim,
+            "sem_dim": args.sem_dim,
+            "pro_dim": args.pro_dim,
+            "spk_dim": args.spk_dim,
             "num_codes": args.num_codes,
         }
     }
     os.makedirs(args.output_dir, exist_ok=True)
-    out_pt = os.path.join(args.output_dir, "vqvae_simple_last.pt")
+    out_pt = os.path.join(args.output_dir, "vqvae_branch_last.pt")
     torch.save(ckpt_payload, out_pt)
 
     t_end = time.time()
@@ -566,20 +595,20 @@ def main():
 
     # Print summary
     print("---")
-    print(f"val_recon_mse:      {val_mse:.6f}")
-    print(f"val_score:          {val_mse:.6f}")  # Same as MSE for simple version
+    print(f"val_recon_mse:      {float(val_metrics['val_recon_mse']):.6f}")
+    print(f"val_score:          {float(val_metrics['val_score']):.6f}")
     
     def fmt(x):
-        if isinstance(x, float) and math.isfinite(x):
-            return f"{x:.6f}"
+        if isinstance(x, (float, int)) and math.isfinite(x):
+            return f"{float(x):.6f}"
         return "nan"
     
-    print(f"val_pesq_wb:        {fmt(val_pesq_wb)}")
-    print(f"val_stoi:           {fmt(val_stoi)}")
-    print(f"speech_metrics_n:   {int(speech_metrics_n)}")
-    print(f"sem_h_bits:         {actual_entropy:.4f}")
-    print(f"pro_h_bits:         {actual_entropy:.4f}")  # Same for single branch
-    print(f"spk_h_bits:         {actual_entropy:.4f}")
+    print(f"val_pesq_wb:        {fmt(speech.get('val_pesq_wb', float('nan')))}")
+    print(f"val_stoi:           {fmt(speech.get('val_stoi', float('nan')))}")
+    print(f"speech_metrics_n:   {int(speech.get('speech_metrics_n', 0))}")
+    print(f"sem_h_bits:         {float(val_metrics['sem_h_bits']):.4f}")
+    print(f"pro_h_bits:         {float(val_metrics['pro_h_bits']):.4f}")
+    print(f"spk_h_bits:         {float(val_metrics['spk_h_bits']):.4f}")
     print(f"training_seconds:   {total_training_time:.1f}")
     print(f"total_seconds:      {t_end - t_start:.1f}")
     print(f"peak_vram_mb:       {peak_vram_mb:.1f}")
