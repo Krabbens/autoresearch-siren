@@ -514,17 +514,27 @@ def main():
     # Speech metrics (proxy via Griffin-Lim)
     val_pesq_wb = float('nan')
     val_stoi = float('nan')
+    speech_metrics_n = 0
     try:
+        # Create wrapper for prepare.evaluate_vqvae_val interface
+        class SimpleFactorizer(nn.Module):
+            def __init__(self, encoder):
+                super().__init__()
+                self.encoder = encoder
+            def forward(self, h, c):
+                z = self.encoder(h)
+                # Return semantic, prosody, speaker (all same for simple version)
+                return z, z, torch.zeros(h.shape[0], 256).to(h.device)
+        
+        fac = SimpleFactorizer(encoder).to(device)
+        fac.eval()
+        
         speech = measure_speech_pesq_stoi(
-            val_paths[:12], hubert, 
-            # Wrap encoder/decoder/vq to match expected interface
-            type('FakeFac', (), {
-                'forward': lambda s, h, c: (encoder(h), encoder(h), torch.zeros(h.shape[0], 256).to(h.device))
-            })(),
-            decoder, vq, vq, vq, device, {}, use_amp
+            val_paths[:12], hubert, fac, decoder, vq, vq, vq, device, {}, use_amp
         )
         val_pesq_wb = speech.get('val_pesq_wb', float('nan'))
         val_stoi = speech.get('val_stoi', float('nan'))
+        speech_metrics_n = speech.get('speech_metrics_n', 0)
     except Exception as e:
         print(f"  Speech metrics failed: {e}")
 
@@ -553,8 +563,15 @@ def main():
     print("---")
     print(f"val_recon_mse:      {val_mse:.6f}")
     print(f"val_score:          {val_mse:.6f}")  # Same as MSE for simple version
-    print(f"val_pesq_wb:        {val_pesq_wb:.6f if isinstance(val_pesq_wb, float) and math.isfinite(val_pesq_wb) else 'nan'}")
-    print(f"val_stoi:           {val_stoi:.6f if isinstance(val_stoi, float) and math.isfinite(val_stoi) else 'nan'}")
+    
+    def fmt(x):
+        if isinstance(x, float) and math.isfinite(x):
+            return f"{x:.6f}"
+        return "nan"
+    
+    print(f"val_pesq_wb:        {fmt(val_pesq_wb)}")
+    print(f"val_stoi:           {fmt(val_stoi)}")
+    print(f"speech_metrics_n:   {int(speech_metrics_n)}")
     print(f"sem_h_bits:         {actual_entropy:.4f}")
     print(f"pro_h_bits:         {actual_entropy:.4f}")  # Same for single branch
     print(f"spk_h_bits:         {actual_entropy:.4f}")
