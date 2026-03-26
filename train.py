@@ -666,18 +666,18 @@ def main():
         pro_all = torch.cat(pro_all, dim=0)
         spk_all = torch.cat(spk_all, dim=0)
         
-        def branch_stats(indices, name):
-            counts = torch.bincount(indices, minlength=args.num_codes)
+        def branch_stats(indices, name, num_codes):
+            counts = torch.bincount(indices, minlength=num_codes)
             num_used = (counts > 0).sum().item()
             probs = counts.float() / counts.sum()
             entropy = -(probs[probs > 0] * torch.log2(probs[probs > 0]) + 1e-10).sum().item()
-            print(f"    {name}: {num_used}/{args.num_codes} ({100*num_used/args.num_codes:.1f}%), H={entropy:.2f} bits")
+            print(f"    {name}: {num_used}/{num_codes} ({100*num_used/num_codes:.1f}%), H={entropy:.2f} bits")
             return num_used, entropy
         
         print(f"  Code stats (train):")
-        sem_used, sem_h = branch_stats(sem_all, "Sem")
-        pro_used, pro_h = branch_stats(pro_all, "Pro")
-        spk_used, spk_h = branch_stats(spk_all, "Spk")
+        sem_used, sem_h = branch_stats(sem_all, "Sem", args.sem_num_codes)
+        pro_used, pro_h = branch_stats(pro_all, "Pro", args.pro_num_codes)
+        spk_used, spk_h = branch_stats(spk_all, "Spk", args.spk_num_codes)
 
     # Full validation evaluation using prepare.py helpers
     print("  Running full validation...")
