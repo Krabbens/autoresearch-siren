@@ -1,0 +1,10 @@
+{
+  "permissions": {
+    "allow": [
+      "Read(//home/sperm/siren/SIREN/src/ultra_low_bitrate_codec/utils/**)",
+      "Read(//home/sperm/siren/SIREN/src/ultra_low_bitrate_codec/models/**)",
+      "Bash(git add *)",
+      "Bash(git commit *)"
+    ]
+  }
+}
