@@ -551,9 +551,9 @@ def main():
             
             # Entropy bonuses (encourage code usage in each branch)
             # Speaker gets higher weight since it tends to collapse
-            sem_ent_bonus = entropy_bonus(sem_idx, args.num_codes, weight=args.entropy_weight)
-            pro_ent_bonus = entropy_bonus(pro_idx, args.num_codes, weight=args.entropy_weight)
-            spk_ent_bonus = entropy_bonus(spk_idx, args.num_codes, weight=args.entropy_weight_spk)
+            sem_ent_bonus = entropy_bonus(sem_idx, args.sem_num_codes, weight=args.entropy_weight)
+            pro_ent_bonus = entropy_bonus(pro_idx, args.pro_num_codes, weight=args.entropy_weight)
+            spk_ent_bonus = entropy_bonus(spk_idx, args.spk_num_codes, weight=args.entropy_weight_spk)
             
             # Total loss
             raw_loss = recon_loss + args.vq_weight * total_vq_loss + sem_ent_bonus + pro_ent_bonus + spk_ent_bonus
