@@ -149,8 +149,9 @@ class BranchEncoder(nn.Module):
             nn.Linear(hidden_dim // 2, pro_dim),
         )
         
-        # Speaker branch - DEDICATED encoder (not just pooling)
-        # This gives speaker more capacity to learn distinct features
+        # Speaker branch - TEMPORAL (not global pooling!)
+        # Each timestep gets a speaker code, then we pool at decode time
+        # This gives speaker much more capacity
         self.speaker_encoder = nn.Sequential(
             nn.Linear(input_dim, hidden_dim),
             nn.LayerNorm(hidden_dim),
@@ -167,20 +168,16 @@ class BranchEncoder(nn.Module):
             x: (B, T, 768) HuBERT features
         Returns:
             sem: (B, T, sem_dim) semantic features
-            pro: (B, T, pro_dim) prosody features
-            spk: (B, spk_dim) global speaker embedding
+            pro: (B, T, pro_dim) prosody features  
+            spk: (B, T, spk_dim) temporal speaker features (pooled at decode)
         """
         # Shared path for sem/pro
         h = self.shared(x)
         sem = self.semantic(h)
         pro = self.prosody(h)
         
-        # Speaker: dedicated encoder + attention pooling
-        h_spk = self.speaker_encoder(x)  # (B, T, spk_dim)
-        
-        # Attention-based pooling for speaker (learnable)
-        attn = torch.softmax(torch.mean(h_spk, dim=-1, keepdim=True), dim=1)  # (B, T, 1)
-        spk = torch.sum(h_spk * attn, dim=1)  # (B, spk_dim)
+        # Speaker: temporal encoding (no pooling here)
+        spk = self.speaker_encoder(x)  # (B, T, spk_dim)
         
         return sem, pro, spk
 
@@ -208,7 +205,7 @@ class BranchDecoder(nn.Module):
         Args:
             sem_q: (B, T, sem_dim) quantized semantic
             pro_q: (B, T, pro_dim) quantized prosody
-            spk_q: (B, spk_dim) or (B, 1, T, spk_dim) quantized speaker
+            spk_q: (B, T, spk_dim) or (B, spk_dim) quantized speaker
             target_len: optional, ignored (we use sem_q's T)
         Returns:
             x_recon: (B, T, 768) reconstructed features
@@ -216,11 +213,11 @@ class BranchDecoder(nn.Module):
         B, T, _ = sem_q.shape
         
         # Handle different speaker shapes
-        if spk_q.dim() == 2:  # (B, spk_dim)
+        if spk_q.dim() == 2:  # (B, spk_dim) global
             spk_expanded = spk_q.unsqueeze(1).expand(-1, T, -1)
         elif spk_q.dim() == 4:  # (B, 1, T, spk_dim) from prepare.py
             spk_expanded = spk_q.squeeze(1)  # (B, T, spk_dim)
-        else:
+        else:  # (B, T, spk_dim) temporal
             spk_expanded = spk_q
         
         # Concatenate and decode
@@ -431,8 +428,8 @@ def main():
             # Quantize each branch
             sem_q, sem_vq_loss, sem_idx, sem_entropy = sem_vq(sem)
             pro_q, pro_vq_loss, pro_idx, pro_entropy = pro_vq(pro)
-            spk_q, spk_vq_loss, spk_idx, spk_entropy = spk_vq(spk.unsqueeze(1))
-            spk_q = spk_q.squeeze(1)  # (B, spk_dim)
+            # Speaker is now temporal (B, T, D) - quantize per timestep
+            spk_q, spk_vq_loss, spk_idx, spk_entropy = spk_vq(spk)
             
             # Decode
             h_recon = decoder(sem_q, pro_q, spk_q)
@@ -489,7 +486,7 @@ def main():
         if global_step % 100 == 0:
             sem_vq.reset_dead_codes(sem)
             pro_vq.reset_dead_codes(pro)
-            spk_vq.reset_dead_codes(spk.unsqueeze(1))
+            spk_vq.reset_dead_codes(spk)  # Now temporal, no unsqueeze needed
         
         global_step += 1
         optim_step += 1
@@ -543,7 +540,7 @@ def main():
             
             _, _, sem_idx, _ = sem_vq(sem)
             _, _, pro_idx, _ = pro_vq(pro)
-            _, _, spk_idx, _ = spk_vq(spk.unsqueeze(1))
+            _, _, spk_idx, _ = spk_vq(spk)  # Temporal now
             
             sem_all.append(sem_idx.flatten())
             pro_all.append(pro_idx.flatten())
