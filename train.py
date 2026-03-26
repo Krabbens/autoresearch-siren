@@ -166,8 +166,8 @@ class BranchEncoder(nn.Module):
                 nn.GELU(),
                 nn.Linear(hidden_dim, spk_dim),
             )
-            # Attention pooling
-            self.speaker_attn = nn.Linear(hidden_dim, 1)
+            # Attention pooling - input is spk_dim (output of speaker_encoder)
+            self.speaker_attn = nn.Linear(spk_dim, 1)
         else:
             # Temporal speaker: per-frame codes
             self.speaker_encoder = nn.Sequential(
