@@ -50,44 +50,100 @@ from ultra_low_bitrate_codec.models.bithubert import BitHuBERT
 class VectorQuantizer(nn.Module):
     """Vector Quantizer with commitment loss and codebook reset."""
     
-    def __init__(self, num_codes, codebook_dim, beta=0.25, reset_threshold=0.001):
+    def __init__(self, num_codes, codebook_dim, beta=0.25, reset_threshold=0.001,
+                 num_residuals=1):
         super().__init__()
         self.num_codes = num_codes
         self.codebook_dim = codebook_dim
-        self.beta = beta  # Commitment loss weight
+        self.beta = beta
         self.reset_threshold = reset_threshold
+        self.num_residuals = num_residuals  # For Residual VQ
         
-        self.embedding = nn.Embedding(num_codes, codebook_dim)
-        self.embedding.weight.data.uniform_(-1.0 / num_codes, 1.0 / num_codes)
+        if num_residuals == 1:
+            # Standard VQ
+            self.embedding = nn.Embedding(num_codes, codebook_dim)
+            self.embedding.weight.data.uniform_(-1.0 / num_codes, 1.0 / num_codes)
+        else:
+            # Residual VQ - multiple stages
+            self.embeddings = nn.ModuleList([
+                nn.Embedding(num_codes, codebook_dim) for _ in range(num_residuals)
+            ])
+            for emb in self.embeddings:
+                emb.weight.data.uniform_(-1.0 / num_codes, 1.0 / num_codes)
         
         self.register_buffer("ema_count", torch.ones(num_codes))
-        self.register_buffer("ema_weight", self.embedding.weight.data.clone())
+        self.register_buffer("ema_weight", torch.ones_like(self.embedding.weight if num_residuals == 1 else self.embeddings[0].weight))
         
     def forward(self, z):
         B, T, D = z.shape
         z_flat = z.reshape(-1, D)
         
-        distances = (
-            torch.sum(z_flat ** 2, dim=1, keepdim=True) 
-            + torch.sum(self.embedding.weight ** 2, dim=1)
-            - 2 * torch.matmul(z_flat, self.embedding.weight.t())
-        )
-        indices = torch.argmin(distances, dim=1)
-        z_q = self.embedding(indices).reshape(z.shape)
-        
-        # Commitment loss: encoder should output vectors close to codebook
-        commit_loss = F.mse_loss(z_q.detach(), z) * self.beta
-        # Codebook loss: codebook should move towards encoder outputs
-        codebook_loss = F.mse_loss(z_q, z.detach())
-        vq_loss = commit_loss + codebook_loss
-        
-        z_q = z + (z_q - z).detach()
-        
-        if self.training:
-            self._update_usage(indices)
-        
-        entropy_bits = self._compute_entropy(indices)
-        return z_q, vq_loss, indices, entropy_bits
+        if self.num_residuals == 1:
+            # Standard VQ
+            distances = (
+                torch.sum(z_flat ** 2, dim=1, keepdim=True) 
+                + torch.sum(self.embedding.weight ** 2, dim=1)
+                - 2 * torch.matmul(z_flat, self.embedding.weight.t())
+            )
+            indices = torch.argmin(distances, dim=1)
+            z_q = self.embedding(indices).reshape(z.shape)
+            
+            # Commitment loss
+            commit_loss = F.mse_loss(z_q.detach(), z) * self.beta
+            codebook_loss = F.mse_loss(z_q, z.detach())
+            vq_loss = commit_loss + codebook_loss
+            
+            z_q = z + (z_q - z).detach()
+            
+            if self.training:
+                self._update_usage(indices)
+            
+            entropy_bits = self._compute_entropy(indices)
+            return z_q, vq_loss, indices, entropy_bits
+        else:
+            # Residual VQ
+            residual = z_flat
+            z_q_flat = torch.zeros_like(residual)
+            total_loss = 0.0
+            all_indices = []
+            
+            for stage in range(self.num_residuals):
+                emb = self.embeddings[stage]
+                distances = (
+                    torch.sum(residual ** 2, dim=1, keepdim=True) 
+                    + torch.sum(emb.weight ** 2, dim=1)
+                    - 2 * torch.matmul(residual, emb.weight.t())
+                )
+                indices = torch.argmin(distances, dim=1)
+                z_q_stage = emb(indices)
+                
+                # Accumulate quantized output
+                z_q_flat = z_q_flat + z_q_stage
+                
+                # Update residual
+                residual = residual - z_q_stage.detach()
+                
+                # Loss for this stage
+                commit_loss = F.mse_loss(z_q_stage.detach(), residual + z_q_stage) * self.beta
+                codebook_loss = F.mse_loss(z_q_stage, (residual + z_q_stage).detach())
+                total_loss += (commit_loss + codebook_loss) / (stage + 1)  # Weight later stages less
+                
+                all_indices.append(indices)
+            
+            z_q = z_q_flat.reshape(z.shape)
+            z_q = z + (z_q_flat.reshape(z.shape) - z).detach()
+            
+            if self.training:
+                # Track usage for first stage
+                self._update_usage(all_indices[0])
+            
+            # Entropy for first stage
+            entropy_bits = self._compute_entropy(all_indices[0])
+            
+            # Stack indices for all stages
+            indices = torch.stack(all_indices, dim=-1)
+            
+            return z_q, total_loss, indices, entropy_bits
     
     def _update_usage(self, indices):
         counts = torch.bincount(indices.flatten(), minlength=self.num_codes)
@@ -363,15 +419,18 @@ def main():
     # Architecture hyperparameters - per branch
     parser.add_argument("--sem_dim", type=int, default=128)
     parser.add_argument("--sem_num_codes", type=int, default=256)
-    parser.add_argument("--sem_compression", type=int, default=1)  # 1=50Hz, 2=25Hz, 4=12.5Hz
+    parser.add_argument("--sem_compression", type=int, default=1)
+    parser.add_argument("--sem_num_residuals", type=int, default=1)  # Residual VQ stages
     
     parser.add_argument("--pro_dim", type=int, default=64)
     parser.add_argument("--pro_num_codes", type=int, default=256)
-    parser.add_argument("--pro_compression", type=int, default=4)  # 4=12.5Hz, 8=6.25Hz
+    parser.add_argument("--pro_compression", type=int, default=4)
+    parser.add_argument("--pro_num_residuals", type=int, default=1)
     
     parser.add_argument("--spk_dim", type=int, default=256)
     parser.add_argument("--spk_num_codes", type=int, default=256)
-    parser.add_argument("--spk_compression", type=int, default=1)  # 1=50Hz, 2=25Hz, 4=12.5Hz
+    parser.add_argument("--spk_compression", type=int, default=1)
+    parser.add_argument("--spk_num_residuals", type=int, default=1)
     
     parser.add_argument("--hidden_dim", type=int, default=512)
     
@@ -440,13 +499,16 @@ def main():
         speaker_mode=args.speaker_mode
     ).to(device)
     
-    # Separate VQ for each branch with per-branch codebook sizes
+    # Separate VQ for each branch with per-branch codebook sizes and residual stages
     sem_vq = VectorQuantizer(num_codes=args.sem_num_codes, codebook_dim=args.sem_dim,
-                             beta=args.commitment_beta, reset_threshold=args.reset_threshold).to(device)
+                             beta=args.commitment_beta, reset_threshold=args.reset_threshold,
+                             num_residuals=args.sem_num_residuals).to(device)
     pro_vq = VectorQuantizer(num_codes=args.pro_num_codes, codebook_dim=args.pro_dim,
-                             beta=args.commitment_beta, reset_threshold=args.reset_threshold).to(device)
+                             beta=args.commitment_beta, reset_threshold=args.reset_threshold,
+                             num_residuals=args.pro_num_residuals).to(device)
     spk_vq = VectorQuantizer(num_codes=args.spk_num_codes, codebook_dim=args.spk_dim,
-                             beta=args.commitment_beta, reset_threshold=args.reset_threshold).to(device)
+                             beta=args.commitment_beta, reset_threshold=args.reset_threshold,
+                             num_residuals=args.spk_num_residuals).to(device)
 
     # Optimizer
     params = (list(encoder.parameters()) + list(decoder.parameters()) + 
@@ -463,18 +525,23 @@ def main():
     
     # Calculate and print bitrate
     HUBERT_SR = 50  # Hz
-    sem_bps = math.log2(args.sem_num_codes) * (HUBERT_SR / args.sem_compression)
-    pro_bps = math.log2(args.pro_num_codes) * (HUBERT_SR / args.pro_compression)
+    # Residual VQ: each stage adds log2(num_codes) bits
+    sem_bits = math.log2(args.sem_num_codes) * args.sem_num_residuals
+    pro_bits = math.log2(args.pro_num_codes) * args.pro_num_residuals
+    spk_bits = math.log2(args.spk_num_codes) * args.spk_num_residuals
+    
+    sem_bps = sem_bits * (HUBERT_SR / args.sem_compression)
+    pro_bps = pro_bits * (HUBERT_SR / args.pro_compression)
     if args.speaker_mode == "global":
-        spk_bps = math.log2(args.spk_num_codes) / 3.0  # ~3 sec per utterance
+        spk_bps = spk_bits / 3.0  # ~3 sec per utterance
     else:
-        spk_bps = math.log2(args.spk_num_codes) * (HUBERT_SR / args.spk_compression)
+        spk_bps = spk_bits * (HUBERT_SR / args.spk_compression)
     total_bps = sem_bps + pro_bps + spk_bps
     
     print("Improved VQ-VAE with branches (autoresearch)")
-    print(f"  sem: {args.sem_dim}d, {args.sem_num_codes} codes, {args.sem_compression}x compression → {sem_bps:.0f} bps")
-    print(f"  pro: {args.pro_dim}d, {args.pro_num_codes} codes, {args.pro_compression}x compression → {pro_bps:.0f} bps")
-    print(f"  spk: {args.spk_dim}d, {args.spk_num_codes} codes, {args.speaker_mode} → {spk_bps:.0f} bps")
+    print(f"  sem: {args.sem_dim}d, {args.sem_num_codes} codes × {args.sem_num_residuals} stages, {args.sem_compression}x → {sem_bps:.0f} bps")
+    print(f"  pro: {args.pro_dim}d, {args.pro_num_codes} codes × {args.pro_num_residuals} stages, {args.pro_compression}x → {pro_bps:.0f} bps")
+    print(f"  spk: {args.spk_dim}d, {args.spk_num_codes} codes × {args.spk_num_residuals} stages, {args.speaker_mode} → {spk_bps:.0f} bps")
     print(f"  TOTAL BITRATE: {total_bps:.0f} bps")
     print(f"  TIME_BUDGET: {TIME_BUDGET}s (wall after step {WARMUP_TRAINING_STEPS})")
     print(f"  train wavs: {len(train_paths)}, val wavs: {len(val_paths)}")
