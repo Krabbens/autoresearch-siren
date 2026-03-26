@@ -1,0 +1,88 @@
+# Experiment 12: Test if encoder output scaling prevents FSQ collapse
+# Key hypothesis: Encoder outputs don't span enough of [-1,1] range for FSQ
+model:
+  hubert_model: "facebook/hubert-base-ls960"
+  hubert_layer: 9
+  freeze_hubert: true
+  cnn_dim: 384
+
+  quantizer_type: "rfsq"
+  fsq_levels: [4, 4, 4, 4]
+  rfsq_num_levels: 1
+
+  semantic:
+    input_dim: 768
+    hidden_dim: 256
+    output_dim: 4
+    temporal_compression: 4
+    vocab_size: 256
+
+  prosody:
+    input_dim: 768
+    hidden_dim: 128
+    output_dim: 2
+    temporal_compression: 16
+    vocab_size: 9
+    fsq_levels: [3, 3]
+
+  speaker:
+    embedding_dim: 256
+    quantized: true
+    fsq_levels: [8, 8, 8, 8]
+
+  decoder:
+    fusion_dim: 768
+    cond_dim: 262
+    fusion_heads: 8
+    fusion_layers: 6
+    dropout: 0.1
+
+  vocoder:
+    type: "bitvocos"
+    dim: 768
+    num_convnext_layers: 12
+    num_res_blocks: 4
+    sample_rate: 16000
+    hop_length: 640
+
+training:
+  batch_size: 32
+  learning_rate: 1e-4
+  warmup_steps: 1000
+  weight_decay: 0.01
+  grad_clip: 0.5
+  # exp12: INCREASE fsq scales to ENLARGE encoder output range before FSQ
+  # If encoder outputs are too small, they all map to same FSQ bin
+  recon_weight: 0.14
+  quant_loss_weight: 4.55
+  quant_loss_sem_weight: 92.0
+  quant_loss_pro_weight: 86.0
+  quant_loss_spk_weight: 58.0
+  # VERY HIGH scales to force encoder outputs to span multiple FSQ bins
+  fsq_input_scale: 10.0
+  fsq_sem_input_scale: 10.0
+  fsq_pro_input_scale: 10.0
+  fsq_input_noise_std: 0.0
+  fsq_sem_noise_std: 0.0
+  fsq_pro_noise_std: 0.0
+  fsq_spk_noise_std: 0.0
+  # Remove spread and diversity - let's isolate the scale effect
+  spread_weight: 0.0
+  spread_floor: 0.04
+  spk_spread_weight: 0.0
+  spk_spread_floor: 0.055
+  latent_diversity_weight: 0.0
+  latent_diversity_sem_weight: 0.0
+  latent_diversity_pro_weight: 0.0
+  latent_diversity_sem_cap: 0.5
+  latent_diversity_pro_cap: 0.26
+  batch_gram_logdet_eps: 0.001
+  batch_gram_logdet_sem_weight: 0.0
+  batch_gram_logdet_pro_weight: 0.0
+  batch_gram_logdet_spk_weight: 0.0
+  num_workers: 4
+  prefetch_factor: 2
+  amp: true
+  grad_accum_steps: 1
+  cudnn_benchmark: true
+  stats_batches: 16
