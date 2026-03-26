@@ -504,24 +504,17 @@ def main() -> None:
                     + hp["quant_loss_spk_weight"] * spk_q_loss
                 )
                 raw_loss = hp["recon_weight"] * recon + hp["quant_loss_weight"] * q
+                # exp11: apply spread penalty to ALL branches (including speaker) to prevent collapse
                 sw = hp.get("spread_weight", 0.0)
                 if sw > 0:
                     fl = hp.get("spread_floor", 0.02)
                     raw_loss = raw_loss + sw * (
                         _spread_penalty_pre_fsq(sem_pre, fl)
                         + _spread_penalty_pre_fsq(pro_pre, fl)
+                        + _spread_penalty_pre_fsq(spk.unsqueeze(1), fl)
                     )
-                ssw = float(hp.get("spk_spread_weight", 0.0))
-                if ssw > 0:
-                    if hp.get("spk_spread_floor") is not None:
-                        sfl = float(hp["spk_spread_floor"])
-                    else:
-                        sfl = float(hp.get("spread_floor", 0.02))
-                    raw_loss = raw_loss + ssw * _spread_penalty_pre_fsq(
-                        spk.unsqueeze(1),
-                        sfl,
-                    )
-                raw_loss = raw_loss - _latent_diversity_term(sem_pre, pro_pre, hp)
+                # exp11: REMOVED broken diversity term (was subtracted, encouraging LOW variance = collapse)
+                # _latent_diversity_term removed
                 bge = float(hp.get("batch_gram_logdet_eps", 1e-3))
                 w_bg_sem = float(hp.get("batch_gram_logdet_sem_weight", 0.0))
                 if w_bg_sem > 0:
