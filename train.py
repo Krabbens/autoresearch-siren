@@ -274,10 +274,9 @@ class SimpleFactorizer(nn.Module):
         self.encoder = encoder
     def forward(self, h, c):
         sem, pro, spk = self.encoder(h)
-        # Expand speaker to match temporal dim for eval compatibility
-        B, T, _ = sem.shape
-        spk_expanded = spk.unsqueeze(1).expand(-1, T, -1)
-        return sem, pro, spk_expanded
+        # prepare.py expects spk to be (B, 1, T, spk_dim) for some reason
+        # Return as (B, T, spk_dim) which decoder handles
+        return sem, pro, spk
 
 
 def main():
