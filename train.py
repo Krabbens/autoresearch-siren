@@ -557,14 +557,31 @@ def main():
     # Use prepare.py's evaluate_vqvae_val
     hp = {"fsq_sem_input_scale": 1.0, "fsq_pro_input_scale": 1.0, "fsq_input_scale": 1.0}
     
+    # prepare.py expects VQ to return (z_q, loss, indices) - our VQ returns 4 values
+    # Wrap VQ modules to match expected interface
+    class VQWrapper(nn.Module):
+        def __init__(self, vq):
+            super().__init__()
+            self.vq = vq
+            self.vocab_size = vq.num_codes
+        def forward(self, x):
+            z_q, loss, indices, _ = self.vq(x)
+            return z_q, loss, indices
+        def from_indices(self, indices):
+            return self.vq.from_indices(indices) if hasattr(self.vq, 'from_indices') else self.vq.embedding(indices)
+    
+    sem_vq_wrap = VQWrapper(sem_vq)
+    pro_vq_wrap = VQWrapper(pro_vq)
+    spk_vq_wrap = VQWrapper(spk_vq)
+    
     val_metrics = evaluate_vqvae_val(
-        hubert, fac_for_eval, decoder, sem_vq, pro_vq, spk_vq,
+        hubert, fac_for_eval, decoder, sem_vq_wrap, pro_vq_wrap, spk_vq_wrap,
         val_loader, device, hp, use_amp, stats_batches=16
     )
     
     # Speech metrics
     speech = measure_speech_pesq_stoi(
-        val_paths[:12], hubert, fac_for_eval, decoder, sem_vq, pro_vq, spk_vq,
+        val_paths[:12], hubert, fac_for_eval, decoder, sem_vq_wrap, pro_vq_wrap, spk_vq_wrap,
         device, hp, use_amp
     )
 
