@@ -123,10 +123,10 @@ class VectorQuantizer(nn.Module):
                 # Update residual
                 residual = residual - z_q_stage.detach()
                 
-                # Loss for this stage
-                commit_loss = F.mse_loss(z_q_stage.detach(), residual + z_q_stage) * self.beta
-                codebook_loss = F.mse_loss(z_q_stage, (residual + z_q_stage).detach())
-                total_loss += (commit_loss + codebook_loss) / (stage + 1)  # Weight later stages less
+                # Loss for this stage - equal weight across stages
+                commit_loss = F.mse_loss(z_q_stage.detach(), z_flat) * self.beta
+                codebook_loss = F.mse_loss(z_q_stage, z_flat.detach())
+                total_loss += (commit_loss + codebook_loss) / self.num_residuals
                 
                 all_indices.append(indices)
             
