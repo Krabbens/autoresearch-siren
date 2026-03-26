@@ -136,11 +136,11 @@ class VectorQuantizer(nn.Module):
             num_dead = dead_mask.sum().item()
             
             # Sample random encoder outputs to replace dead codes
-            z_flat = z.reshape(-1, self.codebook_dim)
+            z_flat = z.reshape(-1, self.codebook_dim).float()  # Ensure float32
             rand_idx = torch.randint(0, len(z_flat), (num_dead,), device=z.device)
             
             with torch.no_grad():
-                self.embedding.weight[dead_mask] = z_flat[rand_idx]
+                self.embedding.weight[dead_mask] = z_flat[rand_idx].to(self.embedding.weight.dtype)
                 self.ema_count[dead_mask] = 1.0
 
 
