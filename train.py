@@ -123,7 +123,7 @@ class BranchEncoder(nn.Module):
         self.pro_dim = pro_dim
         self.spk_dim = spk_dim
         
-        # Shared encoder
+        # Shared encoder for sem/pro
         self.shared = nn.Sequential(
             nn.Linear(input_dim, hidden_dim),
             nn.LayerNorm(hidden_dim),
@@ -149,12 +149,16 @@ class BranchEncoder(nn.Module):
             nn.Linear(hidden_dim // 2, pro_dim),
         )
         
-        # Speaker branch (global, pooled)
-        self.speaker = nn.Sequential(
-            nn.Linear(hidden_dim, hidden_dim // 2),
-            nn.LayerNorm(hidden_dim // 2),
+        # Speaker branch - DEDICATED encoder (not just pooling)
+        # This gives speaker more capacity to learn distinct features
+        self.speaker_encoder = nn.Sequential(
+            nn.Linear(input_dim, hidden_dim),
+            nn.LayerNorm(hidden_dim),
             nn.GELU(),
-            nn.Linear(hidden_dim // 2, spk_dim),
+            nn.Linear(hidden_dim, hidden_dim),
+            nn.LayerNorm(hidden_dim),
+            nn.GELU(),
+            nn.Linear(hidden_dim, spk_dim),
         )
         
     def forward(self, x):
@@ -166,12 +170,17 @@ class BranchEncoder(nn.Module):
             pro: (B, T, pro_dim) prosody features
             spk: (B, spk_dim) global speaker embedding
         """
+        # Shared path for sem/pro
         h = self.shared(x)
         sem = self.semantic(h)
         pro = self.prosody(h)
         
-        # Speaker: global pooling
-        spk = self.speaker(h.mean(dim=1))  # (B, spk_dim)
+        # Speaker: dedicated encoder + attention pooling
+        h_spk = self.speaker_encoder(x)  # (B, T, spk_dim)
+        
+        # Attention-based pooling for speaker (learnable)
+        attn = torch.softmax(torch.mean(h_spk, dim=-1, keepdim=True), dim=1)  # (B, T, 1)
+        spk = torch.sum(h_spk * attn, dim=1)  # (B, spk_dim)
         
         return sem, pro, spk
 
@@ -294,6 +303,7 @@ def main():
     parser.add_argument("--num_codes", type=int, default=512)
     parser.add_argument("--vq_weight", type=float, default=1.0)
     parser.add_argument("--entropy_weight", type=float, default=0.5)
+    parser.add_argument("--entropy_weight_spk", type=float, default=2.0)  # Higher for speaker
     parser.add_argument("--reset_threshold", type=float, default=0.001)
     
     args = parser.parse_args()
@@ -434,9 +444,10 @@ def main():
             total_vq_loss = sem_vq_loss + pro_vq_loss + spk_vq_loss
             
             # Entropy bonuses (encourage code usage in each branch)
+            # Speaker gets higher weight since it tends to collapse
             sem_ent_bonus = entropy_bonus(sem_idx, args.num_codes, weight=args.entropy_weight)
             pro_ent_bonus = entropy_bonus(pro_idx, args.num_codes, weight=args.entropy_weight)
-            spk_ent_bonus = entropy_bonus(spk_idx, args.num_codes, weight=args.entropy_weight)
+            spk_ent_bonus = entropy_bonus(spk_idx, args.num_codes, weight=args.entropy_weight_spk)
             
             # Total loss
             raw_loss = recon_loss + args.vq_weight * total_vq_loss + sem_ent_bonus + pro_ent_bonus + spk_ent_bonus
