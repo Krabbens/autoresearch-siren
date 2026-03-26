@@ -194,12 +194,13 @@ class BranchDecoder(nn.Module):
             nn.Linear(hidden_dim, output_dim),
         )
         
-    def forward(self, sem_q, pro_q, spk_q):
+    def forward(self, sem_q, pro_q, spk_q, target_len=None):
         """
         Args:
             sem_q: (B, T, sem_dim) quantized semantic
             pro_q: (B, T, pro_dim) quantized prosody
             spk_q: (B, spk_dim) quantized speaker
+            target_len: optional, ignored (we use sem_q's T)
         Returns:
             x_recon: (B, T, 768) reconstructed features
         """
