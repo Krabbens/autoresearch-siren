@@ -727,9 +727,15 @@ def main():
         "global_step": global_step,
         "config": {
             "sem_dim": args.sem_dim,
+            "sem_num_codes": args.sem_num_codes,
+            "sem_compression": args.sem_compression,
             "pro_dim": args.pro_dim,
+            "pro_num_codes": args.pro_num_codes,
+            "pro_compression": args.pro_compression,
             "spk_dim": args.spk_dim,
-            "num_codes": args.num_codes,
+            "spk_num_codes": args.spk_num_codes,
+            "spk_compression": args.spk_compression,
+            "speaker_mode": args.speaker_mode,
         }
     }
     os.makedirs(args.output_dir, exist_ok=True)
