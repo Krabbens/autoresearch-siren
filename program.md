@@ -1,114 +1,144 @@
-# autoresearch
+# autoresearch-siren
 
-This is an experiment to have the LLM do its own research.
+Autonomous experimentation on **SIREN V8 VQ-VAE Phase 1**: reconstruct frozen BitHuBERT features through a factorizer, **Residual FSQ** bottlenecks (semantic / prosody / speaker), and a feature reconstructor. This repo is a fork of [karpathy/autoresearch](https://github.com/karpathy/autoresearch) wired to the **SIREN** codec codebase via an editable install of the sibling `../SIREN` repository.
+
+## Important: SIREN code is not sacred
+
+Treat the **SIREN** package (`ultra_low_bitrate_codec`, configs, checkpoints) as **convenience defaults only**, not as a reference implementation you must preserve. The upstream SIREN codebase is **not assumed to be correct or working well**; it may be buggy, unstable, or poorly matched to this harness.
+
+**You are explicitly encouraged** — inside **`train.py` only** — to **edit, replace, or throw away** any part of the architecture and training pipeline that came from SIREN: swap blocks, reimplement layers inline, change losses, replace FSQ with something else, change how HuBERT features are used, collapse or split branches, etc. The starting `train.py` is a **starting point**, not a spec. If you invent a **better** design, **run it** (`uv run train.py`), **read the log**, and **record the outcome in `results.tsv`** (commit, `val_score`, memory, status, description) like any other experiment. If your stack no longer matches `prepare.evaluate_vqvae_val` / `measure_speech_pesq_stoi`, adapt the calls in `train.py` or compute analogous scalars, but **keep printing the same `---` summary line prefixes** (`val_score:`, `val_recon_mse:`, …) whenever they still make sense so `grep` and the TSV workflow stay usable; use `nan` or note divergence in the **description** column if a field no longer applies.
 
 ## Setup
 
 To set up a new experiment, work with the user to:
 
-1. **Agree on a run tag**: propose a tag based on today's date (e.g. `mar5`). The branch `autoresearch/<tag>` must not already exist — this is a fresh run.
-2. **Create the branch**: `git checkout -b autoresearch/<tag>` from current master.
-3. **Read the in-scope files**: The repo is small. Read these files for full context:
-   - `README.md` — repository context.
-   - `prepare.py` — fixed constants, data prep, tokenizer, dataloader, evaluation. Do not modify.
-   - `train.py` — the file you modify. Model architecture, optimizer, training loop.
-4. **Verify data exists**: Check that `~/.cache/autoresearch/` contains data shards and a tokenizer. If not, tell the human to run `uv run prepare.py`.
-5. **Initialize results.tsv**: Create `results.tsv` with just the header row. The baseline will be recorded after the first run.
-6. **Confirm and go**: Confirm setup looks good.
-
-Once you get confirmation, kick off the experimentation.
+1. **Agree on a run tag**: propose a tag based on today's date (e.g. `mar26`). The branch `autoresearch/<tag>` must not already exist — this is a fresh run.
+2. **Create the branch**: `git checkout -b autoresearch/<tag>` from current `master`.
+3. **Read the in-scope files**:
+   - `README.md` — paths, `uv`, sibling `SIREN` checkout.
+   - `prepare.py` — **fixed** constants (`TIME_BUDGET`, default paths), asset checks, **`evaluate_vqvae_val`** (validation recon MSE + FSQ code stats + `val_score`), and **`measure_speech_pesq_stoi`** — objective **speech** metrics from the literature: **wideband PESQ** (ITU-T P.862 family, via the `pesq` package) and **STOI** (Taal et al., via `pystoi`). A short val waveform is built from `h_recon` with a **frozen** linear HuBERT→mel map + **InverseMelScale + Griffin–Lim** (torchaudio), so scores track training but are a **proxy**, not a full neural codec E2E test. **Do not modify.**
+   - `train.py` — **the only file you edit**: the **entire** model + training pipeline may live here (see *SIREN code is not sacred* above).
+4. **Verify assets**: Run `uv run prepare.py`. It checks `.wav` data, YAML config, and BitHuBERT checkpoint (defaults point at the sibling `../SIREN` tree; override with env vars in `prepare.py` if needed).
+5. **Initialize `results.tsv`**: create it with **only** the header row. The baseline is recorded after the first run.
+6. **Confirm and go**: confirm setup, then start the experiment loop.
 
 ## Experimentation
 
-Each experiment runs on a single GPU. The training script runs for a **fixed time budget of 5 minutes** (wall clock training time, excluding startup/compilation). You launch it simply as: `uv run train.py`.
+Each experiment runs on **one GPU** (CPU works but is slow). Training runs for a **fixed wall-clock budget** after a short step warmup (see `prepare.TIME_BUDGET`, default 300 seconds; overridable with env `SIREN_TIME_BUDGET` for smoke tests). Launch:
 
-**What you CAN do:**
-- Modify `train.py` — this is the only file you edit. Everything is fair game: model architecture, optimizer, hyperparameters, training loop, batch size, model size, etc.
+```bash
+uv run train.py > run.log 2>&1
+```
 
-**What you CANNOT do:**
-- Modify `prepare.py`. It is read-only. It contains the fixed evaluation, data loading, tokenizer, and training constants (time budget, sequence length, etc).
-- Install new packages or add dependencies. You can only use what's already in `pyproject.toml`.
-- Modify the evaluation harness. The `evaluate_bpb` function in `prepare.py` is the ground truth metric.
+**What you CAN do**
 
-**The goal is simple: get the lowest val_bpb.** Since the time budget is fixed, you don't need to worry about training time — it's always 5 minutes. Everything is fair game: change the architecture, the optimizer, the hyperparameters, the batch size, the model size. The only constraint is that the code runs without crashing and finishes within the time budget.
+- Modify **`train.py` only** — **full freedom** within that file: architecture, data flow, losses, optimizers, schedules, logging, and how you invoke (or replace) evaluation. You are **not** restricted to “small tweaks inside the V8 stack.”
 
-**VRAM** is a soft constraint. Some increase is acceptable for meaningful val_bpb gains, but it should not blow up dramatically.
+**What you CANNOT do**
 
-**Simplicity criterion**: All else being equal, simpler is better. A small improvement that adds ugly complexity is not worth it. Conversely, removing something and getting equal or better results is a great outcome — that's a simplification win. When evaluating whether to keep a change, weigh the complexity cost against the improvement magnitude. A 0.001 val_bpb improvement that adds 20 lines of hacky code? Probably not worth it. A 0.001 val_bpb improvement from deleting code? Definitely keep. An improvement of ~0 but much simpler code? Keep.
+- Modify **`prepare.py`**. It holds the time budget, default paths, and the **fixed** validation harness (`evaluate_vqvae_val`).
+- Add new PyPI dependencies beyond what resolves from this repo's `pyproject.toml` / editable `siren-codec` (which already includes `pesq` / `pystoi` as direct deps of this fork).
+- Change how `val_score` is computed inside `prepare.py` (that is the ground-truth metric for logging).
 
-**The first run**: Your very first run should always be to establish the baseline, so you will run the training script as is.
+**Goal**
+
+- **Lower `val_score`** (printed after `---`), subject to **healthy FSQ usage**.
+- `val_score` = `val_recon_mse` plus **large penalties** if semantic/prosody/speaker branches show **collapse** (see `prepare.compute_val_score`). Treat collapse as a failed run even if MSE looks good.
+- Also inspect **`sem_h_bits`**, **`pro_h_bits`**, **`spk_h_bits`**, **`val_pesq_wb`**, **`val_stoi`**, and the **train** “Code stats” block. **Higher** is better for PESQ and STOI (unlike `val_score`). Do not conclude stability from a single early snapshot: in full SIREN training, epoch 1 can look misleading; watch for **entropy collapse** over consecutive runs.
+- To skip slow Griffin–Lim during iteration: set env **`SIREN_SKIP_SPEECH_METRICS=1`**. Tune clip count with **`SIREN_SPEECH_METRICS_CLIPS`** and GL iterations with **`SIREN_GL_ITER`**.
+
+**VRAM**
+
+- Soft constraint: stay within reasonable GPU memory for the default config; OOM → log `crash`, revert, try smaller batch or more grad accumulation in `train.py`.
+
+**Simplicity vs bold refactors**
+
+- Prefer smaller changes when they suffice. **Large rewrites are allowed** when you believe SIREN’s structure is the problem — but you must **validate** with a real run and **`results.tsv`**. A big simplification that matches or beats metrics is a strong win.
+
+**First run**
+
+- Always establish a **baseline** with unmodified `train.py` (after any human setup commits), then iterate.
 
 ## Output format
 
-Once the script finishes it prints a summary like this:
+When the script finishes it prints a summary like:
 
 ```
 ---
-val_bpb:          0.997900
-training_seconds: 300.1
-total_seconds:    325.9
-peak_vram_mb:     45060.2
-mfu_percent:      39.80
-total_tokens_M:   499.6
-num_steps:        953
-num_params_M:     50.3
-depth:            8
+val_score:          0.123456
+val_recon_mse:      0.123456
+val_pesq_wb:        2.345678
+val_stoi:           0.789012
+speech_metrics_n:   12
+sem_h_bits:         2.5000
+pro_h_bits:         1.2000
+spk_h_bits:         3.0000
+training_seconds:   300.2
+total_seconds:      330.5
+peak_vram_mb:       12000.0
+num_steps:          142
+checkpoint:         .../vqvae_autoresearch_last.pt
 ```
 
-Note that the script is configured to always stop after 5 minutes, so depending on the computing platform of this computer the numbers might look different. You can extract the key metric from the log file:
+Extract the primary metric:
 
-```
-grep "^val_bpb:" run.log
+```bash
+grep "^val_score:" run.log
+grep "^val_pesq_wb:\|^val_stoi:" run.log
 ```
 
 ## Logging results
 
-When an experiment is done, log it to `results.tsv` (tab-separated, NOT comma-separated — commas break in descriptions).
+Append rows to **`results.tsv`** (tab-separated, **not** CSV — commas break descriptions).
 
-The TSV has a header row and 5 columns:
+Header and **five** columns:
 
 ```
-commit	val_bpb	memory_gb	status	description
+commit	val_score	memory_gb	status	description
 ```
 
-1. git commit hash (short, 7 chars)
-2. val_bpb achieved (e.g. 1.234567) — use 0.000000 for crashes
-3. peak memory in GB, round to .1f (e.g. 12.3 — divide peak_vram_mb by 1024) — use 0.0 for crashes
-4. status: `keep`, `discard`, or `crash`
-5. short text description of what this experiment tried
+1. Git commit hash (short, 7 chars).
+2. **`val_score`** from the run (use `0.000000` for crashes).
+3. Peak memory in GB, one decimal (`peak_vram_mb / 1024`); `0.0` on crash.
+4. `keep`, `discard`, or `crash`.
+5. Short description of the experiment — **especially** if you changed architecture or diverged from the default SIREN stack (say so explicitly).
 
 Example:
 
 ```
-commit	val_bpb	memory_gb	status	description
-a1b2c3d	0.997900	44.0	keep	baseline
-b2c3d4e	0.993200	44.2	keep	increase LR to 0.04
-c3d4e5f	1.005000	44.0	discard	switch to GeLU activation
-d4e5f6g	0.000000	0.0	crash	double model width (OOM)
+commit	val_score	memory_gb	status	description
+a1b2c3d	0.452100	11.0	keep	baseline
+b2c3d4e	0.441200	11.2	keep	higher quant_loss_weight in train.py
+c3d4e5f	15.200000	11.0	discard	pro FSQ collapsed; penalty dominated val_score
+d4e5f6g	0.000000	0.0	crash	OOM after widening fusion
 ```
 
-## The experiment loop
+**Do not commit `results.tsv`** (leave untracked).
 
-The experiment runs on a dedicated branch (e.g. `autoresearch/mar5` or `autoresearch/mar5-gpu0`).
+## Experiment loop
 
-LOOP FOREVER:
+On a dedicated branch (e.g. `autoresearch/mar26`):
 
-1. Look at the git state: the current branch/commit we're on
-2. Tune `train.py` with an experimental idea by directly hacking the code.
-3. git commit
-4. Run the experiment: `uv run train.py > run.log 2>&1` (redirect everything — do NOT use tee or let output flood your context)
-5. Read out the results: `grep "^val_bpb:\|^peak_vram_mb:" run.log`
-6. If the grep output is empty, the run crashed. Run `tail -n 50 run.log` to read the Python stack trace and attempt a fix. If you can't get things to work after more than a few attempts, give up.
-7. Record the results in the tsv (NOTE: do not commit the results.tsv file, leave it untracked by git)
-8. If val_bpb improved (lower), you "advance" the branch, keeping the git commit
-9. If val_bpb is equal or worse, you git reset back to where you started
+**LOOP:**
 
-The idea is that you are a completely autonomous researcher trying things out. If they work, keep. If they don't, discard. And you're advancing the branch so that you can iterate. If you feel like you're getting stuck in some way, you can rewind but you should probably do this very very sparingly (if ever).
+1. Note current branch/commit.
+2. Edit **`train.py`** with one hypothesis.
+3. `git commit`.
+4. `uv run train.py > run.log 2>&1` (redirect all output; do not flood the terminal).
+5. Read results: `grep "^val_score:\|^peak_vram_mb:\|^val_recon_mse:" run.log`. Empty → crash; use `tail -n 80 run.log` for the traceback.
+6. Append a row to `results.tsv` — **every** finished run (including radical architecture experiments) gets a row so the trajectory is auditable.
+7. If **`val_score` improved (lower)** (or your agreed primary metric improved) and you are satisfied with side metrics / stability, keep the commit (advance).
+8. If equal/worse (or collapse), `git reset` to the previous best.
 
-**Timeout**: Each experiment should take ~5 minutes total (+ a few seconds for startup and eval overhead). If a run exceeds 10 minutes, kill it and treat it as a failure (discard and revert).
+**Timeout**
 
-**Crashes**: If a run crashes (OOM, or a bug, or etc.), use your judgment: If it's something dumb and easy to fix (e.g. a typo, a missing import), fix it and re-run. If the idea itself is fundamentally broken, just skip it, log "crash" as the status in the tsv, and move on.
+- Expect ~`TIME_BUDGET` wall time plus model load and final eval. If a run **exceeds ~2× TIME_BUDGET** without finishing, kill it, log `crash`, revert.
 
-**NEVER STOP**: Once the experiment loop has begun (after the initial setup), do NOT pause to ask the human if you should continue. Do NOT ask "should I keep going?" or "is this a good stopping point?". The human might be asleep, or gone from a computer and expects you to continue working *indefinitely* until you are manually stopped. You are autonomous. If you run out of ideas, think harder — read papers referenced in the code, re-read the in-scope files for new angles, try combining previous near-misses, try more radical architectural changes. The loop runs until the human interrupts you, period.
+**Crashes**
 
-As an example use case, a user might leave you running while they sleep. If each experiment takes you ~5 minutes then you can run approx 12/hour, for a total of about 100 over the duration of the average human sleep. The user then wakes up to experimental results, all completed by you while they slept!
+- Trivial fixes (typo, shape) → fix and rerun.
+- Bad idea → log `crash`, move on.
+
+**Autonomy**
+
+- After setup, do not ask the human whether to continue the loop. Keep iterating until interrupted.

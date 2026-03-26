@@ -1,389 +1,524 @@
 """
-One-time data preparation for autoresearch experiments.
-Downloads data shards and trains a BPE tokenizer.
+Fixed harness for autoresearch-siren (SIREN V8 VQ-VAE). Agents must not edit this file.
+
+- Verifies default paths (override with env vars).
+- Exports TIME_BUDGET and evaluation helpers used by train.py.
 
 Usage:
-    python prepare.py                  # full prep (download + tokenizer)
-    python prepare.py --num-shards 8   # download only 8 shards (for testing)
-
-Data and tokenizer are stored in ~/.cache/autoresearch/.
+    uv run prepare.py
 """
 
+from __future__ import annotations
+
+import glob
+import math
 import os
 import sys
-import time
-import math
-import argparse
-import pickle
-from multiprocessing import Pool
+from contextlib import nullcontext
+from typing import Any
 
-import requests
-import pyarrow.parquet as pq
-import rustbpe
-import tiktoken
 import torch
+import torch.nn.functional as F
+from torch import amp as torch_amp
+from torch.utils.data import DataLoader, Dataset
 
 # ---------------------------------------------------------------------------
-# Constants (fixed, do not modify)
+# Constants (fixed — do not modify during agent experiments)
 # ---------------------------------------------------------------------------
 
-MAX_SEQ_LEN = 2048       # context length
-TIME_BUDGET = 300        # training time budget in seconds (5 minutes)
-EVAL_TOKENS = 40 * 524288  # number of tokens for val eval
+TIME_BUDGET = int(
+    os.environ.get("SIREN_TIME_BUDGET", "300")
+)  # wall-clock training seconds after warmup; override for smoke tests
+WARMUP_TRAINING_STEPS = 10  # steps before accumulating wall time (compilation / first batches)
 
-# ---------------------------------------------------------------------------
-# Configuration
-# ---------------------------------------------------------------------------
+# Default paths relative to sibling SIREN checkout
+_AUTORESEARCH_ROOT = os.path.dirname(os.path.abspath(__file__))
+_SIREN_ROOT = os.path.normpath(
+    os.environ.get("SIREN_ROOT", os.path.join(_AUTORESEARCH_ROOT, "..", "SIREN"))
+)
 
-CACHE_DIR = os.path.join(os.path.expanduser("~"), ".cache", "autoresearch")
-DATA_DIR = os.path.join(CACHE_DIR, "data")
-TOKENIZER_DIR = os.path.join(CACHE_DIR, "tokenizer")
-BASE_URL = "https://huggingface.co/datasets/karpathy/climbmix-400b-shuffle/resolve/main"
-MAX_SHARD = 6542 # the last datashard is shard_06542.parquet
-VAL_SHARD = MAX_SHARD  # pinned validation shard (shard_06542)
-VAL_FILENAME = f"shard_{VAL_SHARD:05d}.parquet"
-VOCAB_SIZE = 8192
+DEFAULT_DATA_DIR = os.environ.get(
+    "SIREN_DATA_DIR", os.path.join(_SIREN_ROOT, "data", "waves_recovered_16k")
+)
+DEFAULT_VAL_DATA_DIR = os.environ.get("SIREN_VAL_DATA_DIR", "")
+DEFAULT_CONFIG = os.environ.get(
+    "SIREN_CONFIG",
+    os.path.join(
+        _SIREN_ROOT,
+        "src",
+        "ultra_low_bitrate_codec",
+        "configs",
+        "ultra58bps_16k.yaml",
+    ),
+)
+DEFAULT_HUBERT_CKPT = os.environ.get(
+    "SIREN_HUBERT_CKPT",
+    os.path.join(_SIREN_ROOT, "checkpoints", "bithubert_distill", "bithubert_best.pt"),
+)
+DEFAULT_OUTPUT_DIR = os.environ.get(
+    "SIREN_AUTORESEARCH_OUT",
+    os.path.join(_AUTORESEARCH_ROOT, "checkpoints", "vqvae_autoresearch"),
+)
 
-# BPE split pattern (GPT-4 style, with \p{N}{1,2} instead of {1,3})
-SPLIT_PATTERN = r"""'(?i:[sdmt]|ll|ve|re)|[^\r\n\p{L}\p{N}]?+\p{L}+|\p{N}{1,2}| ?[^\s\p{L}\p{N}]++[\r\n]*|\s*[\r\n]|\s+(?!\S)|\s+"""
+VAL_FRACTION = float(os.environ.get("SIREN_VAL_FRACTION", "0.05"))
+VAL_EVAL_MAX_BATCHES = int(os.environ.get("SIREN_VAL_EVAL_BATCHES", "32"))
+STATS_BATCHES_EVAL = int(os.environ.get("SIREN_STATS_BATCHES_EVAL", "16"))
 
-SPECIAL_TOKENS = [f"<|reserved_{i}|>" for i in range(4)]
-BOS_TOKEN = "<|reserved_0|>"
-
-# ---------------------------------------------------------------------------
-# Data download
-# ---------------------------------------------------------------------------
-
-def download_single_shard(index):
-    """Download one parquet shard with retries. Returns True on success."""
-    filename = f"shard_{index:05d}.parquet"
-    filepath = os.path.join(DATA_DIR, filename)
-    if os.path.exists(filepath):
-        return True
-
-    url = f"{BASE_URL}/{filename}"
-    max_attempts = 5
-    for attempt in range(1, max_attempts + 1):
-        try:
-            response = requests.get(url, stream=True, timeout=30)
-            response.raise_for_status()
-            temp_path = filepath + ".tmp"
-            with open(temp_path, "wb") as f:
-                for chunk in response.iter_content(chunk_size=1024 * 1024):
-                    if chunk:
-                        f.write(chunk)
-            os.rename(temp_path, filepath)
-            print(f"  Downloaded {filename}")
-            return True
-        except (requests.RequestException, IOError) as e:
-            print(f"  Attempt {attempt}/{max_attempts} failed for {filename}: {e}")
-            for path in [filepath + ".tmp", filepath]:
-                if os.path.exists(path):
-                    try:
-                        os.remove(path)
-                    except OSError:
-                        pass
-            if attempt < max_attempts:
-                time.sleep(2 ** attempt)
-    return False
+# Objective speech quality (literature — not SIREN-specific): ITU-T P.862 wideband PESQ,
+# STOI (Taal et al.). Waveform is built from reconstructed HuBERT frames via a fixed
+# linear mel projector + InverseMelScale + Griffin–Lim (torchaudio), so scores track
+# training but are a proxy, not a full neural codec E2E test.
+SKIP_SPEECH_METRICS = os.environ.get("SIREN_SKIP_SPEECH_METRICS", "0") == "1"
+SPEECH_METRICS_MAX_CLIPS = int(os.environ.get("SIREN_SPEECH_METRICS_CLIPS", "12"))
+GRIFFIN_LIM_ITER = int(os.environ.get("SIREN_GL_ITER", "24"))
+SPEECH_SR = 16000
 
 
-def download_data(num_shards, download_workers=8):
-    """Download training shards + pinned validation shard."""
-    os.makedirs(DATA_DIR, exist_ok=True)
-    num_train = min(num_shards, MAX_SHARD)
-    ids = list(range(num_train))
-    if VAL_SHARD not in ids:
-        ids.append(VAL_SHARD)
-
-    # Count what's already downloaded
-    existing = sum(1 for i in ids if os.path.exists(os.path.join(DATA_DIR, f"shard_{i:05d}.parquet")))
-    if existing == len(ids):
-        print(f"Data: all {len(ids)} shards already downloaded at {DATA_DIR}")
-        return
-
-    needed = len(ids) - existing
-    print(f"Data: downloading {needed} shards ({existing} already exist)...")
-
-    workers = max(1, min(download_workers, needed))
-    with Pool(processes=workers) as pool:
-        results = pool.map(download_single_shard, ids)
-
-    ok = sum(1 for r in results if r)
-    print(f"Data: {ok}/{len(ids)} shards ready at {DATA_DIR}")
-
-# ---------------------------------------------------------------------------
-# Tokenizer training
-# ---------------------------------------------------------------------------
-
-def list_parquet_files():
-    """Return sorted list of parquet file paths in the data directory."""
-    files = sorted(f for f in os.listdir(DATA_DIR) if f.endswith(".parquet") and not f.endswith(".tmp"))
-    return [os.path.join(DATA_DIR, f) for f in files]
+def siren_root() -> str:
+    return _SIREN_ROOT
 
 
-def text_iterator(max_chars=1_000_000_000, doc_cap=10_000):
-    """Yield documents from training split (all shards except pinned val shard)."""
-    parquet_paths = [p for p in list_parquet_files() if not p.endswith(VAL_FILENAME)]
-    nchars = 0
-    for filepath in parquet_paths:
-        pf = pq.ParquetFile(filepath)
-        for rg_idx in range(pf.num_row_groups):
-            rg = pf.read_row_group(rg_idx)
-            for text in rg.column("text").to_pylist():
-                doc = text[:doc_cap] if len(text) > doc_cap else text
-                nchars += len(doc)
-                yield doc
-                if nchars >= max_chars:
-                    return
+def list_wav_files(data_dir: str) -> list[str]:
+    return sorted(glob.glob(os.path.join(data_dir, "*.wav")))
 
 
-def train_tokenizer():
-    """Train BPE tokenizer using rustbpe, save as tiktoken pickle."""
-    tokenizer_pkl = os.path.join(TOKENIZER_DIR, "tokenizer.pkl")
-    token_bytes_path = os.path.join(TOKENIZER_DIR, "token_bytes.pt")
-
-    if os.path.exists(tokenizer_pkl) and os.path.exists(token_bytes_path):
-        print(f"Tokenizer: already trained at {TOKENIZER_DIR}")
-        return
-
-    os.makedirs(TOKENIZER_DIR, exist_ok=True)
-
-    parquet_files = list_parquet_files()
-    if len(parquet_files) < 2:
-        print("Tokenizer: need at least 2 data shards (1 train + 1 val). Download more data first.")
+def verify_assets(
+    data_dir: str,
+    config_path: str,
+    hubert_ckpt: str,
+    need_min_wavs: int = 1,
+) -> None:
+    """Exit with message if required files are missing."""
+    if not os.path.isdir(data_dir):
+        print(f"error: data_dir is not a directory: {data_dir}", file=sys.stderr)
+        print("Set SIREN_DATA_DIR or place .wav files under SIREN data/.", file=sys.stderr)
+        sys.exit(1)
+    wavs = list_wav_files(data_dir)
+    if len(wavs) < need_min_wavs:
+        print(
+            f"error: need at least {need_min_wavs} .wav in {data_dir}, found {len(wavs)}",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+    if not os.path.isfile(config_path):
+        print(f"error: config not found: {config_path}", file=sys.stderr)
+        sys.exit(1)
+    if not os.path.isfile(hubert_ckpt):
+        print(
+            f"error: BitHuBERT checkpoint not found: {hubert_ckpt}",
+            file=sys.stderr,
+        )
         sys.exit(1)
 
-    # --- Train with rustbpe ---
-    print("Tokenizer: training BPE tokenizer...")
-    t0 = time.time()
 
-    tokenizer = rustbpe.Tokenizer()
-    vocab_size_no_special = VOCAB_SIZE - len(SPECIAL_TOKENS)
-    tokenizer.train_from_iterator(text_iterator(), vocab_size_no_special, pattern=SPLIT_PATTERN)
-
-    # Build tiktoken encoding from trained merges
-    pattern = tokenizer.get_pattern()
-    mergeable_ranks = {bytes(k): v for k, v in tokenizer.get_mergeable_ranks()}
-    tokens_offset = len(mergeable_ranks)
-    special_tokens = {name: tokens_offset + i for i, name in enumerate(SPECIAL_TOKENS)}
-    enc = tiktoken.Encoding(
-        name="rustbpe",
-        pat_str=pattern,
-        mergeable_ranks=mergeable_ranks,
-        special_tokens=special_tokens,
-    )
-
-    # Save tokenizer
-    with open(tokenizer_pkl, "wb") as f:
-        pickle.dump(enc, f)
-
-    t1 = time.time()
-    print(f"Tokenizer: trained in {t1 - t0:.1f}s, saved to {tokenizer_pkl}")
-
-    # --- Build token_bytes lookup for BPB evaluation ---
-    print("Tokenizer: building token_bytes lookup...")
-    special_set = set(SPECIAL_TOKENS)
-    token_bytes_list = []
-    for token_id in range(enc.n_vocab):
-        token_str = enc.decode([token_id])
-        if token_str in special_set:
-            token_bytes_list.append(0)
-        else:
-            token_bytes_list.append(len(token_str.encode("utf-8")))
-    token_bytes_tensor = torch.tensor(token_bytes_list, dtype=torch.int32)
-    torch.save(token_bytes_tensor, token_bytes_path)
-    print(f"Tokenizer: saved token_bytes to {token_bytes_path}")
-
-    # Sanity check
-    test = "Hello world! Numbers: 123. Unicode: 你好"
-    encoded = enc.encode_ordinary(test)
-    decoded = enc.decode(encoded)
-    assert decoded == test, f"Tokenizer roundtrip failed: {test!r} -> {decoded!r}"
-    print(f"Tokenizer: sanity check passed (vocab_size={enc.n_vocab})")
-
-# ---------------------------------------------------------------------------
-# Runtime utilities (imported by train.py)
-# ---------------------------------------------------------------------------
-
-class Tokenizer:
-    """Minimal tokenizer wrapper. Training is handled above."""
-
-    def __init__(self, enc):
-        self.enc = enc
-        self.bos_token_id = enc.encode_single_token(BOS_TOKEN)
-
-    @classmethod
-    def from_directory(cls, tokenizer_dir=TOKENIZER_DIR):
-        with open(os.path.join(tokenizer_dir, "tokenizer.pkl"), "rb") as f:
-            enc = pickle.load(f)
-        return cls(enc)
-
-    def get_vocab_size(self):
-        return self.enc.n_vocab
-
-    def get_bos_token_id(self):
-        return self.bos_token_id
-
-    def encode(self, text, prepend=None, num_threads=8):
-        if prepend is not None:
-            prepend_id = prepend if isinstance(prepend, int) else self.enc.encode_single_token(prepend)
-        if isinstance(text, str):
-            ids = self.enc.encode_ordinary(text)
-            if prepend is not None:
-                ids.insert(0, prepend_id)
-        elif isinstance(text, list):
-            ids = self.enc.encode_ordinary_batch(text, num_threads=num_threads)
-            if prepend is not None:
-                for row in ids:
-                    row.insert(0, prepend_id)
-        else:
-            raise ValueError(f"Invalid input type: {type(text)}")
-        return ids
-
-    def decode(self, ids):
-        return self.enc.decode(ids)
+def split_train_val_files(
+    data_dir: str,
+    val_fraction: float = VAL_FRACTION,
+    val_data_dir: str = "",
+) -> tuple[list[str], list[str]]:
+    """Return (train_paths, val_paths). If val_data_dir is set, train=all in data_dir, val=all there."""
+    if val_data_dir and os.path.isdir(val_data_dir):
+        train = list_wav_files(data_dir)
+        val = list_wav_files(val_data_dir)
+        if not val:
+            print(f"error: no .wav in val_data_dir {val_data_dir}", file=sys.stderr)
+            sys.exit(1)
+        return train, val
+    all_files = list_wav_files(data_dir)
+    n = len(all_files)
+    n_val = max(1, int(n * val_fraction))
+    if n <= 1:
+        return all_files, all_files
+    val_paths = all_files[-n_val:]
+    train_paths = all_files[:-n_val]
+    if not train_paths:
+        train_paths = all_files
+    return train_paths, val_paths
 
 
-def get_token_bytes(device="cpu"):
-    path = os.path.join(TOKENIZER_DIR, "token_bytes.pt")
-    with open(path, "rb") as f:
-        return torch.load(f, map_location=device)
+class WavListDataset(Dataset):
+    """Load variable-length clips from explicit file paths (same cropping as train script)."""
+
+    def __init__(self, paths: list[str], sample_rate: int = 16000, seed: int = 0):
+        self.paths = paths
+        self.sr = sample_rate
+        self._gen = torch.Generator()
+        self._gen.manual_seed(seed)
+
+    def __len__(self) -> int:
+        return len(self.paths)
+
+    def __getitem__(self, idx: int) -> torch.Tensor:
+        import soundfile as sf
+
+        wav, _ = sf.read(self.paths[idx])
+        wav = torch.tensor(wav, dtype=torch.float32)
+        max_len = 4 * self.sr
+        if wav.shape[0] > max_len:
+            start = torch.randint(
+                0, wav.shape[0] - max_len, (1,), generator=self._gen
+            ).item()
+            wav = wav[start : start + max_len]
+        return wav
 
 
-def _document_batches(split, tokenizer_batch_size=128):
-    """Infinite iterator over document batches from parquet files."""
-    parquet_paths = list_parquet_files()
-    assert len(parquet_paths) > 0, "No parquet files found. Run prepare.py first."
-    val_path = os.path.join(DATA_DIR, VAL_FILENAME)
-    if split == "train":
-        parquet_paths = [p for p in parquet_paths if p != val_path]
-        assert len(parquet_paths) > 0, "No training shards found."
-    else:
-        parquet_paths = [val_path]
-    epoch = 1
-    while True:
-        for filepath in parquet_paths:
-            pf = pq.ParquetFile(filepath)
-            for rg_idx in range(pf.num_row_groups):
-                rg = pf.read_row_group(rg_idx)
-                batch = rg.column('text').to_pylist()
-                for i in range(0, len(batch), tokenizer_batch_size):
-                    yield batch[i:i+tokenizer_batch_size], epoch
-        epoch += 1
+def _collate_pad(batch: list[torch.Tensor]) -> torch.Tensor:
+    """Pad to max length in batch (dim 0)."""
+    max_len = max(int(x.shape[0]) for x in batch)
+    out = torch.zeros(len(batch), max_len, dtype=batch[0].dtype)
+    for i, x in enumerate(batch):
+        out[i, : x.shape[0]] = x
+    return out
 
 
-def make_dataloader(tokenizer, B, T, split, buffer_size=1000):
-    """
-    BOS-aligned dataloader with best-fit packing.
-    Every row starts with BOS. Documents packed using best-fit to minimize cropping.
-    When no document fits remaining space, crops shortest doc to fill exactly.
-    100% utilization (no padding).
-    """
-    assert split in ["train", "val"]
-    row_capacity = T + 1
-    batches = _document_batches(split)
-    bos_token = tokenizer.get_bos_token_id()
-    doc_buffer = []
-    epoch = 1
+def make_dataloader(
+    paths: list[str],
+    batch_size: int,
+    shuffle: bool,
+    num_workers: int,
+    prefetch_factor: int,
+    pin_memory: bool,
+    seed: int,
+) -> DataLoader:
+    ds = WavListDataset(paths, seed=seed)
+    kw: dict[str, Any] = {
+        "batch_size": batch_size,
+        "shuffle": shuffle,
+        "num_workers": num_workers,
+        "pin_memory": pin_memory,
+        "collate_fn": _collate_pad,
+    }
+    if num_workers > 0:
+        kw["persistent_workers"] = True
+        kw["prefetch_factor"] = prefetch_factor
+    return DataLoader(ds, **kw)
 
-    def refill_buffer():
-        nonlocal epoch
-        doc_batch, epoch = next(batches)
-        token_lists = tokenizer.encode(doc_batch, prepend=bos_token)
-        doc_buffer.extend(token_lists)
 
-    # Pre-allocate buffers: [inputs (B*T) | targets (B*T)]
-    row_buffer = torch.empty((B, row_capacity), dtype=torch.long)
-    cpu_buffer = torch.empty(2 * B * T, dtype=torch.long, pin_memory=True)
-    gpu_buffer = torch.empty(2 * B * T, dtype=torch.long, device="cuda")
-    cpu_inputs = cpu_buffer[:B * T].view(B, T)
-    cpu_targets = cpu_buffer[B * T:].view(B, T)
-    inputs = gpu_buffer[:B * T].view(B, T)
-    targets = gpu_buffer[B * T:].view(B, T)
+def _fixed_mel_proj_matrix(dtype: torch.dtype, dev: torch.device) -> torch.Tensor:
+    g = torch.Generator(device="cpu")
+    g.manual_seed(42)
+    w = torch.randn(80, 768, generator=g, dtype=dtype) * (768**-0.5)
+    return w.to(dev)
 
-    while True:
-        for row_idx in range(B):
-            pos = 0
-            while pos < row_capacity:
-                while len(doc_buffer) < buffer_size:
-                    refill_buffer()
-
-                remaining = row_capacity - pos
-
-                # Find largest doc that fits entirely
-                best_idx = -1
-                best_len = 0
-                for i, doc in enumerate(doc_buffer):
-                    doc_len = len(doc)
-                    if doc_len <= remaining and doc_len > best_len:
-                        best_idx = i
-                        best_len = doc_len
-
-                if best_idx >= 0:
-                    doc = doc_buffer.pop(best_idx)
-                    row_buffer[row_idx, pos:pos + len(doc)] = torch.tensor(doc, dtype=torch.long)
-                    pos += len(doc)
-                else:
-                    # No doc fits — crop shortest to fill remaining
-                    shortest_idx = min(range(len(doc_buffer)), key=lambda i: len(doc_buffer[i]))
-                    doc = doc_buffer.pop(shortest_idx)
-                    row_buffer[row_idx, pos:pos + remaining] = torch.tensor(doc[:remaining], dtype=torch.long)
-                    pos += remaining
-
-        cpu_inputs.copy_(row_buffer[:, :-1])
-        cpu_targets.copy_(row_buffer[:, 1:])
-        gpu_buffer.copy_(cpu_buffer, non_blocking=True)
-        yield inputs, targets, epoch
-
-# ---------------------------------------------------------------------------
-# Evaluation (DO NOT CHANGE — this is the fixed metric)
-# ---------------------------------------------------------------------------
 
 @torch.no_grad()
-def evaluate_bpb(model, tokenizer, batch_size):
+def measure_speech_pesq_stoi(
+    val_paths: list[str],
+    hubert: torch.nn.Module,
+    fac: torch.nn.Module,
+    rec: torch.nn.Module,
+    sem_vq: torch.nn.Module,
+    pro_vq: torch.nn.Module,
+    spk_vq: torch.nn.Module,
+    device: torch.device,
+    hp: dict[str, Any],
+    use_amp: bool,
+    max_clips: int = SPEECH_METRICS_MAX_CLIPS,
+) -> dict[str, float | int]:
     """
-    Bits per byte (BPB): vocab size-independent evaluation metric.
-    Sums per-token cross-entropy (in nats), sums target byte lengths,
-    then converts nats/byte to bits/byte. Special tokens (byte length 0)
-    are excluded from both sums.
-    Uses fixed MAX_SEQ_LEN so results are comparable across configs.
-    """
-    token_bytes = get_token_bytes(device="cuda")
-    val_loader = make_dataloader(tokenizer, batch_size, MAX_SEQ_LEN, "val")
-    steps = EVAL_TOKENS // (batch_size * MAX_SEQ_LEN)
-    total_nats = 0.0
-    total_bytes = 0
-    for _ in range(steps):
-        x, y, _ = next(val_loader)
-        loss_flat = model(x, y, reduction='none').view(-1)
-        y_flat = y.view(-1)
-        nbytes = token_bytes[y_flat]
-        mask = nbytes > 0
-        total_nats += (loss_flat * mask).sum().item()
-        total_bytes += nbytes.sum().item()
-    return total_nats / (math.log(2) * total_bytes)
+    Wideband PESQ (ITU-T P.862.2-style via ``pesq`` pkg) and STOI (Taal et al.).
 
-# ---------------------------------------------------------------------------
-# Main
-# ---------------------------------------------------------------------------
+    Reconstructed waveform is obtained with a **fixed, frozen** HuBERT→mel linear map
+    and Griffin–Lim (torchaudio), so the score moves with ``h_recon`` quality. This is
+    a **proxy** (not a full vocoder pipeline).
+    """
+    if SKIP_SPEECH_METRICS or not val_paths:
+        return {
+            "val_pesq_wb": float("nan"),
+            "val_stoi": float("nan"),
+            "speech_metrics_n": 0,
+            "speech_metrics_ok": 0,
+        }
+
+    import numpy as np
+    import soundfile as sf
+    import torchaudio
+    from pesq import pesq as pesq_fn
+    from pystoi import stoi as stoi_fn
+
+    amp_ctx = (
+        torch_amp.autocast(device_type="cuda", dtype=torch.float16, enabled=use_amp)
+        if device.type == "cuda"
+        else nullcontext()
+    )
+
+    mel_tf = torchaudio.transforms.MelSpectrogram(
+        sample_rate=SPEECH_SR,
+        n_fft=1024,
+        hop_length=256,
+        n_mels=80,
+        power=2.0,
+    ).to(device)
+    inv_mel = torchaudio.transforms.InverseMelScale(
+        n_stft=513, n_mels=80, sample_rate=SPEECH_SR
+    ).to(device)
+    griffin = torchaudio.transforms.GriffinLim(
+        n_fft=1024,
+        hop_length=256,
+        win_length=1024,
+        power=2.0,
+        n_iter=GRIFFIN_LIM_ITER,
+    ).to(device)
+
+    W = _fixed_mel_proj_matrix(torch.float32, device)
+    fsem = float(hp.get("fsq_sem_input_scale", hp.get("fsq_input_scale", 1.0)))
+    fpro = float(hp.get("fsq_pro_input_scale", hp.get("fsq_input_scale", 1.0)))
+
+    fac.eval()
+    rec.eval()
+    sem_vq.eval()
+    pro_vq.eval()
+    spk_vq.eval()
+
+    pesq_vals: list[float] = []
+    stoi_vals: list[float] = []
+
+    for path in val_paths[: max(0, max_clips)]:
+        try:
+            wav_np, sr = sf.read(path, dtype="float32")
+        except OSError:
+            continue
+        if wav_np.ndim > 1:
+            wav_np = wav_np.mean(axis=-1)
+        if sr != SPEECH_SR:
+            continue
+        wav_t = torch.from_numpy(wav_np).float().to(device)
+        max_len = 4 * SPEECH_SR
+        if wav_t.shape[0] > max_len:
+            start = (wav_t.shape[0] - max_len) // 2
+            wav_t = wav_t[start : start + max_len]
+        if wav_t.shape[0] < 2 * SPEECH_SR:
+            continue
+        wav_b = wav_t.unsqueeze(0).unsqueeze(1)
+
+        with amp_ctx:
+            h_feats, cnn_feats = hubert(wav_b)
+            sem, pro, spk = fac(h_feats, cnn_feats)
+            sem_z, _, _ = sem_vq(sem * fsem)
+            pro_z, _, _ = pro_vq(pro * fpro)
+            spk_z, _, _ = spk_vq(spk)
+            h_recon = rec(sem_z, pro_z, spk_z, target_len=h_feats.shape[1])
+
+        _no_amp = (
+            torch_amp.autocast(device_type="cuda", enabled=False)
+            if device.type == "cuda"
+            else nullcontext()
+        )
+        with _no_amp:
+            h32 = h_recon.float()
+            mel_ref = mel_tf(wav_b.squeeze(1)).clamp(min=1e-10)
+            mel_pred = torch.matmul(h32, W.T).transpose(1, 2)
+            mel_pred = torch.nn.functional.softplus(mel_pred).clamp(min=1e-10)
+            t_ref = mel_ref.shape[-1]
+            mel_pred = torch.nn.functional.interpolate(
+                mel_pred,
+                size=t_ref,
+                mode="linear",
+                align_corners=False,
+            )
+            mel_pred = mel_pred * (mel_ref.mean() / (mel_pred.mean() + 1e-8))
+            lin = inv_mel(mel_pred)
+            est = griffin(lin)
+            ref_1d = wav_b.squeeze()
+            est_1d = est.squeeze()[: ref_1d.shape[-1]]
+
+        ref_np = ref_1d.detach().float().cpu().numpy().astype(np.float64)
+        est_np = est_1d.detach().float().cpu().numpy().astype(np.float64)
+        n = min(len(ref_np), len(est_np))
+        if n < SPEECH_SR:
+            continue
+        ref_np = ref_np[:n]
+        est_np = est_np[:n]
+        ref_np = ref_np / (np.max(np.abs(ref_np)) + 1e-8)
+        est_np = est_np / (np.max(np.abs(est_np)) + 1e-8)
+
+        try:
+            p = float(pesq_fn(SPEECH_SR, ref_np, est_np, "wb"))
+            if math.isfinite(p):
+                pesq_vals.append(p)
+        except Exception:
+            pass
+        try:
+            s = float(stoi_fn(ref_np, est_np, SPEECH_SR, extended=False))
+            if math.isfinite(s):
+                stoi_vals.append(s)
+        except Exception:
+            pass
+
+    n_p, n_s = len(pesq_vals), len(stoi_vals)
+    if n_p == 0 and n_s == 0:
+        return {
+            "val_pesq_wb": float("nan"),
+            "val_stoi": float("nan"),
+            "speech_metrics_n": 0,
+            "speech_metrics_ok": 0,
+        }
+
+    return {
+        "val_pesq_wb": float(np.nanmean(np.array(pesq_vals))) if pesq_vals else float("nan"),
+        "val_stoi": float(np.nanmean(np.array(stoi_vals))) if stoi_vals else float("nan"),
+        "speech_metrics_n": max(n_p, n_s),
+        "speech_metrics_ok": 1,
+    }
+
+
+def compute_val_score(
+    recon_mse: float,
+    sem_h: float,
+    pro_h: float,
+    spk_h: float,
+    sem_n: int,
+    pro_n: int,
+    spk_n: int,
+) -> float:
+    """
+    Lower is better (like val_bpb). Primary term: reconstruction MSE.
+    Large additive penalties discourage FSQ collapse.
+    """
+    score = float(recon_mse)
+    if sem_h < 0.05 and sem_n <= 2:
+        score += 10.0
+    if pro_h < 0.05 and pro_n <= 2:
+        score += 10.0
+    if spk_h < 0.5 and spk_n <= 4:
+        score += 5.0
+    return score
+
+
+@torch.no_grad()
+def evaluate_vqvae_val(
+    hubert: torch.nn.Module,
+    fac: torch.nn.Module,
+    rec: torch.nn.Module,
+    sem_vq: torch.nn.Module,
+    pro_vq: torch.nn.Module,
+    spk_vq: torch.nn.Module,
+    val_loader: DataLoader,
+    device: torch.device,
+    hp: dict[str, Any],
+    use_amp: bool,
+    stats_batches: int = STATS_BATCHES_EVAL,
+) -> dict[str, float | int]:
+    """
+    Mean recon MSE on val batches + code usage (H bits/tok, n_used) for Sem/Pro/Spk.
+    """
+    from ultra_low_bitrate_codec.utils.v8_residual_fsq import (
+        semantic_index_stats,
+        speaker_rfsq_indices_for_stats,
+    )
+
+    fac.eval()
+    rec.eval()
+    sem_vq.eval()
+    pro_vq.eval()
+    spk_vq.eval()
+
+    fsem = float(hp.get("fsq_sem_input_scale", hp.get("fsq_input_scale", 1.0)))
+    fpro = float(hp.get("fsq_pro_input_scale", hp.get("fsq_input_scale", 1.0)))
+
+    total_recon = 0.0
+    total_elems = 0
+    sem_parts: list[torch.Tensor] = []
+    pro_parts: list[torch.Tensor] = []
+    spk_parts: list[torch.Tensor] = []
+
+    amp_ctx = (
+        torch_amp.autocast(device_type="cuda", dtype=torch.float16, enabled=use_amp)
+        if device.type == "cuda"
+        else nullcontext()
+    )
+
+    it = iter(val_loader)
+    for b in range(max(1, VAL_EVAL_MAX_BATCHES)):
+        try:
+            wav = next(it)
+        except StopIteration:
+            break
+        wav = wav.to(device, non_blocking=True)
+        with amp_ctx:
+            h_feats, cnn_feats = hubert(wav.unsqueeze(1))
+            sem, pro, spk = fac(h_feats, cnn_feats)
+            sem_q = sem * fsem
+            pro_q = pro * fpro
+            sem_z, _, s_ix = sem_vq(sem_q)
+            pro_z, _, p_ix = pro_vq(pro_q)
+            spk_z, _, k_ix = spk_vq(spk)
+            h_recon = rec(sem_z, pro_z, spk_z, target_len=h_feats.shape[1])
+            if h_feats.shape[1] > h_recon.shape[1]:
+                h_tgt = h_feats[:, : h_recon.shape[1], :]
+            else:
+                h_tgt = h_feats
+            recon = F.mse_loss(h_recon, h_tgt)
+        bs = int(wav.shape[0])
+        total_recon += float(recon.item()) * bs
+        total_elems += bs
+        sem_parts.append(s_ix)
+        pro_parts.append(p_ix)
+        spk_parts.append(k_ix)
+
+    mean_recon = total_recon / max(1, total_elems)
+
+    # Optional richer histogram: more batches for index stats only
+    it2 = iter(val_loader)
+    sem_acc: list[torch.Tensor] = []
+    pro_acc: list[torch.Tensor] = []
+    spk_acc: list[torch.Tensor] = []
+    for _ in range(max(1, stats_batches)):
+        try:
+            wav = next(it2)
+        except StopIteration:
+            it2 = iter(val_loader)
+            wav = next(it2)
+        wav = wav.to(device, non_blocking=True)
+        h_s, c_s = hubert(wav.unsqueeze(1))
+        sem_s, pro_s, spk_s = fac(h_s, c_s)
+        sem_s = sem_s * fsem
+        pro_s = pro_s * fpro
+        _, _, s_ix = sem_vq(sem_s)
+        _, _, p_ix = pro_vq(pro_s)
+        _, _, k_ix = spk_vq(spk_s)
+        sem_acc.append(s_ix)
+        pro_acc.append(p_ix)
+        spk_acc.append(k_ix)
+
+    try:
+        sem_idx = torch.cat(sem_acc, dim=0)
+        pro_idx = torch.cat(pro_acc, dim=0)
+        spk_idx = torch.cat(spk_acc, dim=0)
+    except RuntimeError:
+        sem_idx = sem_acc[-1]
+        pro_idx = pro_acc[-1]
+        spk_idx = spk_acc[-1]
+
+    def _branch_stats(vq, indices: torch.Tensor, speaker: bool) -> tuple[float, int]:
+        idx = speaker_rfsq_indices_for_stats(indices) if speaker else indices
+        h_bits, _, n_used = semantic_index_stats(vq, idx)
+        return float(h_bits), int(n_used)
+
+    sem_h, sem_n = _branch_stats(sem_vq, sem_idx, False)
+    pro_h, pro_n = _branch_stats(pro_vq, pro_idx, False)
+    spk_h, spk_n = _branch_stats(spk_vq, spk_idx, True)
+
+    val_score = compute_val_score(mean_recon, sem_h, pro_h, spk_h, sem_n, pro_n, spk_n)
+
+    return {
+        "val_recon_mse": mean_recon,
+        "val_score": val_score,
+        "sem_h_bits": sem_h,
+        "pro_h_bits": pro_h,
+        "spk_h_bits": spk_h,
+        "sem_n_used": sem_n,
+        "pro_n_used": pro_n,
+        "spk_n_used": spk_n,
+    }
+
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Prepare data and tokenizer for autoresearch")
-    parser.add_argument("--num-shards", type=int, default=10, help="Number of training shards to download (-1 = all). Val shard is always pinned.")
-    parser.add_argument("--download-workers", type=int, default=8, help="Number of parallel download workers")
-    args = parser.parse_args()
-
-    num_shards = MAX_SHARD if args.num_shards == -1 else args.num_shards
-
-    print(f"Cache directory: {CACHE_DIR}")
-    print()
-
-    # Step 1: Download data
-    download_data(num_shards, download_workers=args.download_workers)
-    print()
-
-    # Step 2: Train tokenizer
-    train_tokenizer()
-    print()
-    print("Done! Ready to train.")
+    print(f"SIREN root: {_SIREN_ROOT}")
+    print(f"Default DATA_DIR: {DEFAULT_DATA_DIR}")
+    verify_assets(DEFAULT_DATA_DIR, DEFAULT_CONFIG, DEFAULT_HUBERT_CKPT)
+    tr, va = split_train_val_files(
+        DEFAULT_DATA_DIR, VAL_FRACTION, DEFAULT_VAL_DATA_DIR
+    )
+    print(f"Train wavs: {len(tr)}, Val wavs: {len(va)}")
+    print("OK — run: uv run train.py")
