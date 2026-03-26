@@ -156,14 +156,27 @@ class VectorQuantizer(nn.Module):
         return -(probs * torch.log2(probs)).sum().item()
     
     def reset_dead_codes(self, z):
-        if self.ema_count.min() < self.reset_threshold:
-            dead_mask = self.ema_count < self.reset_threshold
-            num_dead = dead_mask.sum().item()
-            z_flat = z.reshape(-1, self.codebook_dim).float()
-            rand_idx = torch.randint(0, len(z_flat), (num_dead,), device=z.device)
-            with torch.no_grad():
-                self.embedding.weight[dead_mask] = z_flat[rand_idx].to(self.embedding.weight.dtype)
-                self.ema_count[dead_mask] = 1.0
+        """Reset unused codes to random encoder outputs."""
+        if self.num_residuals == 1:
+            # Standard VQ
+            if self.ema_count.min() < self.reset_threshold:
+                dead_mask = self.ema_count < self.reset_threshold
+                num_dead = dead_mask.sum().item()
+                z_flat = z.reshape(-1, self.codebook_dim).float()
+                rand_idx = torch.randint(0, len(z_flat), (num_dead,), device=z.device)
+                with torch.no_grad():
+                    self.embedding.weight[dead_mask] = z_flat[rand_idx].to(self.embedding.weight.dtype)
+                    self.ema_count[dead_mask] = 1.0
+        else:
+            # Residual VQ - only reset first stage
+            if self.ema_count.min() < self.reset_threshold:
+                dead_mask = self.ema_count < self.reset_threshold
+                num_dead = dead_mask.sum().item()
+                z_flat = z.reshape(-1, self.codebook_dim).float()
+                rand_idx = torch.randint(0, len(z_flat), (num_dead,), device=z.device)
+                with torch.no_grad():
+                    self.embeddings[0].weight[dead_mask] = z_flat[rand_idx].to(self.embeddings[0].weight.dtype)
+                    self.ema_count[dead_mask] = 1.0
 
 
 # ---------------------------------------------------------------------------
