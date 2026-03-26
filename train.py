@@ -257,25 +257,36 @@ class BranchDecoder(nn.Module):
             sem_q: (B, T', sem_dim) where T' = T // sem_compression
             pro_q: (B, T'', pro_dim) where T'' = T // pro_compression
             spk_q: (B, T''', spk_dim) or (B, spk_dim) if global
-            target_len: original T (from semantic branch)
+            target_len: original T (from HuBERT features)
         Returns:
-            x_recon: (B, T, 768) reconstructed features
+            x_recon: (B, target_len, 768) reconstructed features
         """
-        # Use semantic length as reference
-        B, T, _ = sem_q.shape
-        T = T * self.sem_compression  # Original length
+        if target_len is None:
+            # Use semantic length as reference
+            B, T, _ = sem_q.shape
+            target_len = T * self.sem_compression
         
-        # Upsample all branches to original length
-        sem_q = self._upsample(sem_q, T, self.sem_compression)
-        pro_q = self._upsample(pro_q, T, self.pro_compression)
+        B = sem_q.shape[0]
+        
+        # Upsample all branches to target length
+        sem_q = self._upsample(sem_q, target_len, self.sem_compression)
+        pro_q = self._upsample(pro_q, target_len, self.pro_compression)
         
         # Handle speaker
         if spk_q.dim() == 2:  # Global (B, spk_dim)
-            spk_expanded = spk_q.unsqueeze(1).expand(-1, T, -1)
+            spk_expanded = spk_q.unsqueeze(1).expand(-1, target_len, -1)
         elif spk_q.dim() == 4:  # From prepare.py (B, 1, T, spk_dim)
             spk_expanded = spk_q.squeeze(1)
+            if spk_expanded.shape[1] != target_len:
+                spk_expanded = self._upsample(spk_expanded, target_len, self.spk_compression)
         else:  # Temporal (B, T', spk_dim)
-            spk_expanded = self._upsample(spk_q, T, self.spk_compression)
+            spk_expanded = self._upsample(spk_q, target_len, self.spk_compression)
+        
+        # Ensure all branches have same length
+        min_len = min(sem_q.shape[1], pro_q.shape[1], spk_expanded.shape[1], target_len)
+        sem_q = sem_q[:, :min_len, :]
+        pro_q = pro_q[:, :min_len, :]
+        spk_expanded = spk_expanded[:, :min_len, :]
         
         combined = torch.cat([sem_q, pro_q, spk_expanded], dim=-1)
         return self.net(combined)
@@ -529,8 +540,8 @@ def main():
                 # Temporal speaker: (B, T, spk_dim)
                 spk_q, spk_vq_loss, spk_idx, spk_entropy = spk_vq(spk)
             
-            # Decode
-            h_recon = decoder(sem_q, pro_q, spk_q)
+            # Decode - pass target_len from HuBERT features
+            h_recon = decoder(sem_q, pro_q, spk_q, target_len=h_feats.shape[1])
             
             # Reconstruction loss
             recon_loss = F.mse_loss(h_recon, h_feats)
