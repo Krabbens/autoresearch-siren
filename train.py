@@ -199,14 +199,20 @@ class BranchDecoder(nn.Module):
         Args:
             sem_q: (B, T, sem_dim) quantized semantic
             pro_q: (B, T, pro_dim) quantized prosody
-            spk_q: (B, spk_dim) quantized speaker
+            spk_q: (B, spk_dim) or (B, 1, T, spk_dim) quantized speaker
             target_len: optional, ignored (we use sem_q's T)
         Returns:
             x_recon: (B, T, 768) reconstructed features
         """
-        # Expand speaker to match temporal dimension
         B, T, _ = sem_q.shape
-        spk_expanded = spk_q.unsqueeze(1).expand(-1, T, -1)
+        
+        # Handle different speaker shapes
+        if spk_q.dim() == 2:  # (B, spk_dim)
+            spk_expanded = spk_q.unsqueeze(1).expand(-1, T, -1)
+        elif spk_q.dim() == 4:  # (B, 1, T, spk_dim) from prepare.py
+            spk_expanded = spk_q.squeeze(1)  # (B, T, spk_dim)
+        else:
+            spk_expanded = spk_q
         
         # Concatenate and decode
         combined = torch.cat([sem_q, pro_q, spk_expanded], dim=-1)
