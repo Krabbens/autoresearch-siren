@@ -19,6 +19,24 @@ Override paths with env vars documented in `prepare.py` (`SIREN_ROOT`, `SIREN_DA
 - [uv](https://docs.astral.sh/uv/)
 - One **CUDA** GPU recommended (same as training SIREN).
 
+## New machine (clone + data + deps)
+
+Use **HTTPS** if you do not have GitHub SSH keys on that machine (`git@github.com:...` fails with “Permission denied (publickey)”).
+
+```bash
+git clone https://github.com/Krabbens/autoresearch-siren.git
+cd autoresearch-siren
+git checkout autoresearch/mar27
+```
+
+Install [GitHub CLI](https://cli.github.com/) (`gh`), then run `gh auth login` once. After that:
+
+```bash
+./setup.sh
+```
+
+`setup.sh` clones **SIREN** next to this repo, downloads the training tarball from [Releases](https://github.com/Krabbens/autoresearch-siren/releases), extracts checkpoints, and creates a venv. To clone SIREN via SSH instead: `USE_SSH_CLONE=1 ./setup.sh`.
+
 ## Quick start
 
 ```bash

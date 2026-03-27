@@ -15,6 +15,14 @@ fi
 
 RELEASE_TAG="v0.1-data"
 REPO="Krabbens/autoresearch-siren"
+# HTTPS works without SSH keys; set USE_SSH_CLONE=1 if you prefer git@github.com
+SIREN_CLONE_URL="${SIREN_CLONE_URL:-$(
+    if [ "${USE_SSH_CLONE:-0}" = 1 ]; then
+        echo "git@github.com:Krabbens/SIREN.git"
+    else
+        echo "https://github.com/Krabbens/SIREN.git"
+    fi
+)}"
 
 download_asset() {
     local filename="$1"
@@ -32,8 +40,8 @@ mkdir -p /tmp/siren-setup
 echo ""
 echo "--- Step 1: Clone SIREN repo (if missing) ---"
 if [ ! -d "$SIREN_ROOT/.git" ]; then
-    echo "  Cloning Krabbens/SIREN..."
-    git clone git@github.com:Krabbens/SIREN.git "$SIREN_ROOT"
+    echo "  Cloning Krabbens/SIREN ($SIREN_CLONE_URL)..."
+    git clone "$SIREN_CLONE_URL" "$SIREN_ROOT"
 else
     echo "  [skip] SIREN already cloned at $SIREN_ROOT"
 fi
