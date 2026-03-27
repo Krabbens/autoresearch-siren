@@ -77,3 +77,103 @@ Epoch 44/100: train_loss=1.6625, val_loss=1.0135
 Epoch 45/100: train_loss=1.6584, val_loss=1.0208
 Epoch 46/100: train_loss=1.6472, val_loss=0.9978
   ✓ Saved best checkpoint (val_mse: 0.9978)
+Epoch 47/100: train_loss=1.6251, val_loss=0.9890
+  ✓ Saved best checkpoint (val_mse: 0.9890)
+Epoch 48/100: train_loss=1.6241, val_loss=0.9852
+  ✓ Saved best checkpoint (val_mse: 0.9852)
+Epoch 49/100: train_loss=1.6110, val_loss=0.9603
+  ✓ Saved best checkpoint (val_mse: 0.9603)
+Epoch 50/100: train_loss=1.5948, val_loss=0.9598
+  ✓ Saved best checkpoint (val_mse: 0.9598)
+Epoch 51/100: train_loss=1.5851, val_loss=0.9633
+Epoch 52/100: train_loss=1.5839, val_loss=0.9441
+  ✓ Saved best checkpoint (val_mse: 0.9441)
+Epoch 53/100: train_loss=1.5710, val_loss=0.9672
+Epoch 54/100: train_loss=1.5625, val_loss=0.9596
+Epoch 55/100: train_loss=1.5553, val_loss=0.9316
+  ✓ Saved best checkpoint (val_mse: 0.9316)
+Epoch 56/100: train_loss=1.5404, val_loss=0.9315
+  ✓ Saved best checkpoint (val_mse: 0.9315)
+Epoch 57/100: train_loss=1.5295, val_loss=0.9082
+  ✓ Saved best checkpoint (val_mse: 0.9082)
+Epoch 58/100: train_loss=1.5254, val_loss=0.9126
+Epoch 59/100: train_loss=1.5174, val_loss=0.9227
+Epoch 60/100: train_loss=1.5134, val_loss=0.8932
+  ✓ Saved best checkpoint (val_mse: 0.8932)
+Epoch 61/100: train_loss=1.5003, val_loss=0.9048
+Epoch 62/100: train_loss=1.4964, val_loss=0.8900
+  ✓ Saved best checkpoint (val_mse: 0.8900)
+Epoch 63/100: train_loss=1.4853, val_loss=0.8937
+Epoch 64/100: train_loss=1.4825, val_loss=0.8739
+  ✓ Saved best checkpoint (val_mse: 0.8739)
+Epoch 65/100: train_loss=1.4747, val_loss=0.8701
+  ✓ Saved best checkpoint (val_mse: 0.8701)
+Epoch 66/100: train_loss=1.4675, val_loss=0.8718
+Epoch 67/100: train_loss=1.4562, val_loss=0.8653
+  ✓ Saved best checkpoint (val_mse: 0.8653)
+Epoch 68/100: train_loss=1.4525, val_loss=0.8688
+Epoch 69/100: train_loss=1.4481, val_loss=0.8601
+  ✓ Saved best checkpoint (val_mse: 0.8601)
+Epoch 70/100: train_loss=1.4394, val_loss=0.8548
+  ✓ Saved best checkpoint (val_mse: 0.8548)
+Epoch 71/100: train_loss=1.4418, val_loss=0.8577
+Epoch 72/100: train_loss=1.4292, val_loss=0.8480
+  ✓ Saved best checkpoint (val_mse: 0.8480)
+Epoch 73/100: train_loss=1.4230, val_loss=0.8439
+  ✓ Saved best checkpoint (val_mse: 0.8439)
+Epoch 74/100: train_loss=1.4196, val_loss=0.8444
+Epoch 75/100: train_loss=1.4131, val_loss=0.8354
+  ✓ Saved best checkpoint (val_mse: 0.8354)
+Epoch 76/100: train_loss=1.4129, val_loss=0.8340
+  ✓ Saved best checkpoint (val_mse: 0.8340)
+Epoch 77/100: train_loss=1.4079, val_loss=0.8325
+  ✓ Saved best checkpoint (val_mse: 0.8325)
+Epoch 78/100: train_loss=1.3994, val_loss=0.8304
+  ✓ Saved best checkpoint (val_mse: 0.8304)
+Epoch 79/100: train_loss=1.4018, val_loss=0.8254
+  ✓ Saved best checkpoint (val_mse: 0.8254)
+Epoch 80/100: train_loss=1.3996, val_loss=0.8237
+  ✓ Saved best checkpoint (val_mse: 0.8237)
+Epoch 81/100: train_loss=1.3925, val_loss=0.8223
+  ✓ Saved best checkpoint (val_mse: 0.8223)
+Epoch 82/100: train_loss=1.3898, val_loss=0.8183
+  ✓ Saved best checkpoint (val_mse: 0.8183)
+Epoch 83/100: train_loss=1.3855, val_loss=0.8157
+  ✓ Saved best checkpoint (val_mse: 0.8157)
+Epoch 84/100: train_loss=1.3851, val_loss=0.8142
+  ✓ Saved best checkpoint (val_mse: 0.8142)
+Epoch 85/100: train_loss=1.3821, val_loss=0.8128
+  ✓ Saved best checkpoint (val_mse: 0.8128)
+Epoch 86/100: train_loss=1.3802, val_loss=0.8104
+  ✓ Saved best checkpoint (val_mse: 0.8104)
+Epoch 87/100: train_loss=1.3785, val_loss=0.8089
+  ✓ Saved best checkpoint (val_mse: 0.8089)
+Epoch 88/100: train_loss=1.3752, val_loss=0.8088
+  ✓ Saved best checkpoint (val_mse: 0.8088)
+Epoch 89/100: train_loss=1.3777, val_loss=0.8078
+  ✓ Saved best checkpoint (val_mse: 0.8078)
+Epoch 90/100: train_loss=1.3736, val_loss=0.8062
+  ✓ Saved best checkpoint (val_mse: 0.8062)
+Epoch 91/100: train_loss=1.3671, val_loss=0.8058
+  ✓ Saved best checkpoint (val_mse: 0.8058)
+Epoch 92/100: train_loss=1.3675, val_loss=0.8046
+  ✓ Saved best checkpoint (val_mse: 0.8046)
+Epoch 93/100: train_loss=1.3647, val_loss=0.8045
+  ✓ Saved best checkpoint (val_mse: 0.8045)
+Epoch 94/100: train_loss=1.3620, val_loss=0.8034
+  ✓ Saved best checkpoint (val_mse: 0.8034)
+Epoch 95/100: train_loss=1.3621, val_loss=0.8034
+  ✓ Saved best checkpoint (val_mse: 0.8034)
+Epoch 96/100: train_loss=1.3663, val_loss=0.8029
+  ✓ Saved best checkpoint (val_mse: 0.8029)
+Epoch 97/100: train_loss=1.3614, val_loss=0.8025
+  ✓ Saved best checkpoint (val_mse: 0.8025)
+Epoch 98/100: train_loss=1.3643, val_loss=0.8025
+  ✓ Saved best checkpoint (val_mse: 0.8025)
+Epoch 99/100: train_loss=1.3556, val_loss=0.8023
+  ✓ Saved best checkpoint (val_mse: 0.8023)
+Epoch 100/100: train_loss=1.3605, val_loss=0.8023
+  ✓ Saved best checkpoint (val_mse: 0.8023)
+
+Training complete! Best val MSE: 0.8023
+Checkpoint: /home/sperm/siren/autoresearch-siren/checkpoints/vqvae_autoresearch/hubert2mel_supervised_best.pt
