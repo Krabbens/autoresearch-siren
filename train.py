@@ -323,7 +323,7 @@ def main():
     # VQ hyperparameters
     parser.add_argument("--num_codes", type=int, default=1024)  # Larger codebook
     parser.add_argument("--vq_weight", type=float, default=1.0)
-    parser.add_argument("--commitment_beta", type=float, default=0.25)  # VQ commitment loss weight
+    parser.add_argument("--commitment_beta", type=float, default=1.0)  # exp24: increased from 0.25 for stronger VQ commitment
     parser.add_argument("--entropy_weight", type=float, default=1.0)  # Higher for all
     parser.add_argument("--entropy_weight_spk", type=float, default=5.0)  # Much higher for speaker
     parser.add_argument("--reset_threshold", type=float, default=0.0005)  # Reset dead codes sooner
