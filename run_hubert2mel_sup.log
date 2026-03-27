@@ -1,0 +1,79 @@
+HuBERT2Mel Supervised Training
+  Device: cuda
+Epoch 1/100: train_loss=13.1088, val_loss=4.0926
+  ✓ Saved best checkpoint (val_mse: 4.0926)
+Epoch 2/100: train_loss=3.9788, val_loss=2.1873
+  ✓ Saved best checkpoint (val_mse: 2.1873)
+Epoch 3/100: train_loss=3.1444, val_loss=2.0449
+  ✓ Saved best checkpoint (val_mse: 2.0449)
+Epoch 4/100: train_loss=2.9743, val_loss=1.9063
+  ✓ Saved best checkpoint (val_mse: 1.9063)
+Epoch 5/100: train_loss=2.8492, val_loss=1.8399
+  ✓ Saved best checkpoint (val_mse: 1.8399)
+Epoch 6/100: train_loss=2.7539, val_loss=1.7908
+  ✓ Saved best checkpoint (val_mse: 1.7908)
+Epoch 7/100: train_loss=2.6673, val_loss=1.7390
+  ✓ Saved best checkpoint (val_mse: 1.7390)
+Epoch 8/100: train_loss=2.5955, val_loss=1.6773
+  ✓ Saved best checkpoint (val_mse: 1.6773)
+Epoch 9/100: train_loss=2.5386, val_loss=1.6184
+  ✓ Saved best checkpoint (val_mse: 1.6184)
+Epoch 10/100: train_loss=2.4752, val_loss=1.5623
+  ✓ Saved best checkpoint (val_mse: 1.5623)
+Epoch 11/100: train_loss=2.4235, val_loss=1.5249
+  ✓ Saved best checkpoint (val_mse: 1.5249)
+Epoch 12/100: train_loss=2.3850, val_loss=1.4993
+  ✓ Saved best checkpoint (val_mse: 1.4993)
+Epoch 13/100: train_loss=2.3379, val_loss=1.5352
+Epoch 14/100: train_loss=2.3055, val_loss=1.4621
+  ✓ Saved best checkpoint (val_mse: 1.4621)
+Epoch 15/100: train_loss=2.2646, val_loss=1.5366
+Epoch 16/100: train_loss=2.2351, val_loss=1.4387
+  ✓ Saved best checkpoint (val_mse: 1.4387)
+Epoch 17/100: train_loss=2.1945, val_loss=1.4668
+Epoch 18/100: train_loss=2.1520, val_loss=1.3517
+  ✓ Saved best checkpoint (val_mse: 1.3517)
+Epoch 19/100: train_loss=2.1303, val_loss=1.3562
+Epoch 20/100: train_loss=2.0868, val_loss=1.3248
+  ✓ Saved best checkpoint (val_mse: 1.3248)
+Epoch 21/100: train_loss=2.0779, val_loss=1.2608
+  ✓ Saved best checkpoint (val_mse: 1.2608)
+Epoch 22/100: train_loss=2.0509, val_loss=1.2690
+Epoch 23/100: train_loss=2.0141, val_loss=1.2752
+Epoch 24/100: train_loss=1.9936, val_loss=1.2584
+  ✓ Saved best checkpoint (val_mse: 1.2584)
+Epoch 25/100: train_loss=1.9804, val_loss=1.2343
+  ✓ Saved best checkpoint (val_mse: 1.2343)
+Epoch 26/100: train_loss=1.9683, val_loss=1.2246
+  ✓ Saved best checkpoint (val_mse: 1.2246)
+Epoch 27/100: train_loss=1.9233, val_loss=1.1955
+  ✓ Saved best checkpoint (val_mse: 1.1955)
+Epoch 28/100: train_loss=1.9240, val_loss=1.2006
+Epoch 29/100: train_loss=1.8900, val_loss=1.1568
+  ✓ Saved best checkpoint (val_mse: 1.1568)
+Epoch 30/100: train_loss=1.8752, val_loss=1.1479
+  ✓ Saved best checkpoint (val_mse: 1.1479)
+Epoch 31/100: train_loss=1.8450, val_loss=1.1527
+Epoch 32/100: train_loss=1.8426, val_loss=1.1341
+  ✓ Saved best checkpoint (val_mse: 1.1341)
+Epoch 33/100: train_loss=1.8335, val_loss=1.1207
+  ✓ Saved best checkpoint (val_mse: 1.1207)
+Epoch 34/100: train_loss=1.8093, val_loss=1.1269
+Epoch 35/100: train_loss=1.7883, val_loss=1.1402
+Epoch 36/100: train_loss=1.7826, val_loss=1.1306
+Epoch 37/100: train_loss=1.7711, val_loss=1.1176
+  ✓ Saved best checkpoint (val_mse: 1.1176)
+Epoch 38/100: train_loss=1.7502, val_loss=1.0801
+  ✓ Saved best checkpoint (val_mse: 1.0801)
+Epoch 39/100: train_loss=1.7369, val_loss=1.0600
+  ✓ Saved best checkpoint (val_mse: 1.0600)
+Epoch 40/100: train_loss=1.7181, val_loss=1.0633
+Epoch 41/100: train_loss=1.7040, val_loss=1.0242
+  ✓ Saved best checkpoint (val_mse: 1.0242)
+Epoch 42/100: train_loss=1.6874, val_loss=1.0334
+Epoch 43/100: train_loss=1.6756, val_loss=1.0457
+Epoch 44/100: train_loss=1.6625, val_loss=1.0135
+  ✓ Saved best checkpoint (val_mse: 1.0135)
+Epoch 45/100: train_loss=1.6584, val_loss=1.0208
+Epoch 46/100: train_loss=1.6472, val_loss=0.9978
+  ✓ Saved best checkpoint (val_mse: 0.9978)

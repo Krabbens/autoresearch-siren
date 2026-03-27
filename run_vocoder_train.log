@@ -1,0 +1,37 @@
+VQ-VAE + Vocoder Training
+  Device: cuda
+  Bitrate: ~11250 bps
+Epoch 1/100: vqvae=112.9117, mel=1.9171, audio=0.0934 (warmup), val_mel=1.3620, val_audio=0.0922
+  ✓ Saved best checkpoint (val_loss: 1.4542)
+Epoch 2/100: vqvae=179.9280, mel=1.3251, audio=0.0921 (warmup), val_mel=1.3319, val_audio=0.0923
+  ✓ Saved best checkpoint (val_loss: 1.4243)
+Epoch 3/100: vqvae=309.9756, mel=1.3243, audio=0.0915 (warmup), val_mel=1.3258, val_audio=0.0924
+  ✓ Saved best checkpoint (val_loss: 1.4182)
+Epoch 4/100: vqvae=398.9060, mel=1.3089, audio=0.0909 (warmup), val_mel=1.3011, val_audio=0.0925
+  ✓ Saved best checkpoint (val_loss: 1.3936)
+Epoch 5/100: vqvae=419.3089, mel=1.2913, audio=0.0901 (warmup), val_mel=1.2963, val_audio=0.0924
+  ✓ Saved best checkpoint (val_loss: 1.3887)
+Epoch 6/100: vqvae=390.8492, mel=1.2718, audio=0.0894 (warmup), val_mel=1.2598, val_audio=0.0923
+  ✓ Saved best checkpoint (val_loss: 1.3521)
+Epoch 7/100: vqvae=335.3154, mel=1.2677, audio=0.0882 (warmup), val_mel=1.3016, val_audio=0.0925
+Epoch 8/100: vqvae=292.9875, mel=1.2693, audio=0.0869 (warmup), val_mel=1.2746, val_audio=0.0925
+Epoch 9/100: vqvae=242.8690, mel=1.2672, audio=0.0855 (warmup), val_mel=1.2742, val_audio=0.0926
+Epoch 10/100: vqvae=209.9991, mel=1.2625, audio=0.0839 (warmup), val_mel=1.2422, val_audio=0.0927
+  ✓ Saved best checkpoint (val_loss: 1.3348)
+Epoch 11/100: vqvae=193.8900, mel=1.2627, audio=0.1376, gan=8.4789, val_mel=1.2625, val_audio=0.0988
+Epoch 12/100: vqvae=173.0895, mel=1.2453, audio=0.1343, gan=8.8667, val_mel=1.2498, val_audio=0.0975
+Epoch 13/100: vqvae=158.8935, mel=1.2335, audio=0.1365, gan=10.2995, val_mel=1.2385, val_audio=0.0980
+Epoch 14/100: vqvae=147.5363, mel=1.2261, audio=0.1378, gan=10.5089, val_mel=1.2152, val_audio=0.0987
+  ✓ Saved best checkpoint (val_loss: 1.3140)
+Epoch 15/100: vqvae=135.9501, mel=1.2136, audio=0.1404, gan=10.9111, val_mel=1.2228, val_audio=0.0988
+Epoch 16/100: vqvae=127.6362, mel=1.2065, audio=0.1390, gan=11.6328, val_mel=1.2097, val_audio=0.0999
+  ✓ Saved best checkpoint (val_loss: 1.3096)
+Epoch 17/100: vqvae=119.8859, mel=1.1957, audio=0.1427, gan=11.7938, val_mel=1.2109, val_audio=0.0993
+Epoch 18/100: vqvae=115.9570, mel=1.1926, audio=0.1411, gan=11.4978, val_mel=1.1929, val_audio=0.1003
+  ✓ Saved best checkpoint (val_loss: 1.2932)
+Epoch 19/100: vqvae=112.2924, mel=1.1870, audio=0.1422, gan=11.3090, val_mel=1.1971, val_audio=0.1010
+Epoch 20/100: vqvae=107.8956, mel=1.1818, audio=0.1420, gan=11.7183, val_mel=1.1806, val_audio=0.0999
+  ✓ Saved best checkpoint (val_loss: 1.2805)
+Epoch 21/100: vqvae=103.8821, mel=1.1744, audio=0.1417, gan=11.8394, val_mel=1.1773, val_audio=0.0982
+  ✓ Saved best checkpoint (val_loss: 1.2755)
+Epoch 22/100: vqvae=99.7261, mel=1.1702, audio=0.1405, gan=12.2121, val_mel=1.1774, val_audio=0.0982

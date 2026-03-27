@@ -1,0 +1,16 @@
+HuBERT2Mel + BitVocos Training (Frozen VQ-VAE)
+  Device: cuda
+  VQ-VAE: /home/sperm/siren/SIREN/checkpoints/bit_diffusion_v8_vqvae/vqvae_ep80.pt
+DEBUG DECODER CONFIG: dict_keys(['fusion_dim', 'cond_dim', 'fusion_heads', 'fusion_layers', 'dropout'])
+DEBUG DIMS: sem=768, pro=768, spk=768, fusion=768
+DEBUG CROSS_FUSION INIT: sem=768, pro=768
+Traceback (most recent call last):
+  File "/home/sperm/siren/autoresearch-siren/train_vocos_finetune.py", line 515, in <module>
+    main()
+  File "/home/sperm/siren/autoresearch-siren/train_vocos_finetune.py", line 241, in main
+    fac.load_state_dict(vqvae_ckpt["factorizer"])
+  File "/home/sperm/siren/autoresearch-siren/.venv/lib/python3.11/site-packages/torch/nn/modules/module.py", line 2639, in load_state_dict
+    raise RuntimeError(
+RuntimeError: Error(s) in loading state_dict for InformationFactorizerV2:
+	size mismatch for semantic_reducer.conv.weight: copying a param with shape torch.Size([256, 768, 4]) from checkpoint, the shape in current model is torch.Size([256, 768, 8]).
+	size mismatch for prosody_reducer.conv.weight: copying a param with shape torch.Size([128, 768, 20]) from checkpoint, the shape in current model is torch.Size([128, 768, 32]).

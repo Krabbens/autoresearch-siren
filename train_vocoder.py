@@ -388,21 +388,21 @@ def main():
     parser.add_argument("--config", type=str, default=DEFAULT_CONFIG)
     parser.add_argument("--hubert_ckpt", type=str, default=DEFAULT_HUBERT_CKPT)
     parser.add_argument("--output_dir", type=str, default=DEFAULT_OUTPUT_DIR)
-    parser.add_argument("--epochs", type=int, default=100)
+    parser.add_argument("--epochs", type=int, default=50)
     parser.add_argument("--lr", type=float, default=2e-4)
-    parser.add_argument("--batch_size", type=int, default=16)
+    parser.add_argument("--batch_size", type=int, default=64)
     
     # VQ-VAE config
     parser.add_argument("--num_codes", type=int, default=1024)
     parser.add_argument("--pro_compression", type=int, default=4)
     parser.add_argument("--commitment_beta", type=float, default=1.0)
     
-    # Vocoder config
-    parser.add_argument("--vocos_dim", type=int, default=384)
-    parser.add_argument("--vocos_layers", type=int, default=6)
+    # Vocoder config - optimized for speed
+    parser.add_argument("--vocos_dim", type=int, default=256)
+    parser.add_argument("--vocos_layers", type=int, default=4)
     
-    # GAN config
-    parser.add_argument("--gan_start_epoch", type=int, default=10)
+    # GAN config - optimized for speed
+    parser.add_argument("--gan_start_epoch", type=int, default=5)
     parser.add_argument("--mpd_weight", type=float, default=1.0)
     parser.add_argument("--mrd_weight", type=float, default=1.0)
     parser.add_argument("--feat_match_weight", type=float, default=10.0)
@@ -432,6 +432,10 @@ def main():
     train_loader = make_dataloader(
         train_paths, args.batch_size, shuffle=True, num_workers=4,
         prefetch_factor=2, pin_memory=pin, seed=int(time.time()) % (2**31)
+    )
+    val_loader = make_dataloader(
+        val_paths, args.batch_size, shuffle=False, num_workers=2,
+        prefetch_factor=2, pin_memory=pin, seed=0
     )
 
     # Models
@@ -708,6 +712,8 @@ def main():
                 
                 if audio_pred.shape[1] > wav.shape[1]:
                     audio_pred = audio_pred[:, :wav.shape[1]]
+                elif audio_pred.shape[1] < wav.shape[1]:
+                    audio_pred = F.pad(audio_pred, (0, wav.shape[1] - audio_pred.shape[1]))
                 
                 val_audio_loss += F.l1_loss(audio_pred, wav).item()
                 val_batches += 1

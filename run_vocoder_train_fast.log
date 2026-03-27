@@ -1,0 +1,13 @@
+VQ-VAE + Vocoder Training
+  Device: cuda
+  Bitrate: ~11250 bps
+Epoch 1/50: vqvae=130.6233, mel=2.7886, audio=0.0952 (warmup), val_mel=2.1927, val_audio=0.0938
+  ✓ Saved best checkpoint (val_loss: 2.2864)
+Epoch 2/50: vqvae=102.9208, mel=1.9033, audio=0.0932 (warmup), val_mel=1.6786, val_audio=0.0934
+  ✓ Saved best checkpoint (val_loss: 1.7721)
+Epoch 3/50: vqvae=102.9963, mel=1.4693, audio=0.0929 (warmup), val_mel=1.3542, val_audio=0.0935
+  ✓ Saved best checkpoint (val_loss: 1.4477)
+Epoch 4/50: vqvae=120.3374, mel=1.3389, audio=0.0927 (warmup), val_mel=1.3539, val_audio=0.0936
+  ✓ Saved best checkpoint (val_loss: 1.4475)
+Epoch 5/50: vqvae=147.2482, mel=1.3282, audio=0.0923 (warmup), val_mel=1.3198, val_audio=0.0936
+  ✓ Saved best checkpoint (val_loss: 1.4134)

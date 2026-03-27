@@ -41,6 +41,10 @@ class VectorQuantizer(torch.nn.Module):
                 torch.nn.Embedding(num_codes, codebook_dim) for _ in range(num_residuals)
             ])
         
+        # Buffers for loading checkpoints
+        self.register_buffer("ema_count", torch.ones(num_codes))
+        self.register_buffer("ema_weight", torch.ones((num_codes, codebook_dim)))
+        
     def forward(self, z):
         B, T, D = z.shape
         z_flat = z.reshape(-1, D)
@@ -287,14 +291,14 @@ def main():
         n_fft=1024, hop_length=320
     ).to(device).eval()
     
-    # Load weights
-    encoder.load_state_dict(ckpt["encoder"])
-    decoder.load_state_dict(ckpt["decoder"])
-    sem_vq.load_state_dict(ckpt["sem_vq"])
-    pro_vq.load_state_dict(ckpt["pro_vq"])
-    spk_vq.load_state_dict(ckpt["spk_vq"])
-    hubert2mel.load_state_dict(ckpt["hubert2mel"])
-    vocoder.load_state_dict(ckpt["vocoder"])
+    # Load weights (non-strict to handle buffer mismatches)
+    encoder.load_state_dict(ckpt["encoder"], strict=False)
+    decoder.load_state_dict(ckpt["decoder"], strict=False)
+    sem_vq.load_state_dict(ckpt["sem_vq"], strict=False)
+    pro_vq.load_state_dict(ckpt["pro_vq"], strict=False)
+    spk_vq.load_state_dict(ckpt["spk_vq"], strict=False)
+    hubert2mel.load_state_dict(ckpt["hubert2mel"], strict=False)
+    vocoder.load_state_dict(ckpt["vocoder"], strict=False)
     
     # Setup data
     data_dir = os.path.abspath(args.data_dir)

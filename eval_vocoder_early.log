@@ -1,0 +1,16 @@
+VQ-VAE + Vocoder Evaluation
+  Checkpoint: checkpoints/vqvae_autoresearch/vqvae_vocoder_best.pt
+  Device: cuda
+  Config: {'num_codes': 1024, 'pro_compression': 4, 'vocos_dim': 256, 'vocos_layers': 4}
+Traceback (most recent call last):
+  File "/home/sperm/siren/autoresearch-siren/eval_vocoder.py", line 399, in <module>
+    main()
+  File "/home/sperm/siren/autoresearch-siren/.venv/lib/python3.11/site-packages/torch/utils/_contextlib.py", line 124, in decorate_context
+    return func(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^
+  File "/home/sperm/siren/autoresearch-siren/eval_vocoder.py", line 297, in main
+    sem_vq.load_state_dict(ckpt["sem_vq"])
+  File "/home/sperm/siren/autoresearch-siren/.venv/lib/python3.11/site-packages/torch/nn/modules/module.py", line 2639, in load_state_dict
+    raise RuntimeError(
+RuntimeError: Error(s) in loading state_dict for VectorQuantizer:
+	Missing key(s) in state_dict: "ema_weight". 
