@@ -1,3 +1,7 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
 [project]
 name = "autoresearch-siren"
 version = "0.1.0"
@@ -8,6 +12,19 @@ dependencies = [
     "siren-codec",
     "pesq>=0.0.4",
     "pystoi>=0.4.1",
+]
+
+[tool.setuptools]
+# Loose scripts at repo root only — do not auto-discover dirs like checkpoints/, eval_output/
+packages = []
+py-modules = [
+    "train",
+    "prepare",
+    "eval_hubert2mel_supervised",
+    "train_hubert2mel_supervised",
+    "eval_vocoder",
+    "train_vocoder",
+    "train_vocos_finetune",
 ]
 
 [tool.uv.sources]
