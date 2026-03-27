@@ -317,8 +317,8 @@ def main():
     parser.add_argument("--spk_dim", type=int, default=256)
     parser.add_argument("--hidden_dim", type=int, default=512)
     
-    # Temporal compression (exp19: prosody at lower frame rate)
-    parser.add_argument("--pro_temporal_compression", type=int, default=1)  # 1=no compression, 2=2x, 4=4x, etc.
+    # Temporal compression (exp21: prosody at lower frame rate)
+    parser.add_argument("--pro_temporal_compression", type=int, default=4)  # 1=no compression, 2=2x, 4=4x (exp21: 4x compression)
     
     # VQ hyperparameters
     parser.add_argument("--num_codes", type=int, default=1024)  # Larger codebook
