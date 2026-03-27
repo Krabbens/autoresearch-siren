@@ -313,12 +313,12 @@ def main():
     
     # Architecture hyperparameters
     parser.add_argument("--sem_dim", type=int, default=128)
-    parser.add_argument("--pro_dim", type=int, default=64)
+    parser.add_argument("--pro_dim", type=int, default=128)  # exp22: doubled from 64 for more prosody capacity
     parser.add_argument("--spk_dim", type=int, default=256)
     parser.add_argument("--hidden_dim", type=int, default=512)
     
-    # Temporal compression (exp21: prosody at lower frame rate)
-    parser.add_argument("--pro_temporal_compression", type=int, default=4)  # 1=no compression, 2=2x, 4=4x (exp21: 4x compression)
+    # Temporal compression (exp19: prosody at lower frame rate)
+    parser.add_argument("--pro_temporal_compression", type=int, default=1)  # 1=no compression, 2=2x, 4=4x, etc.
     
     # VQ hyperparameters
     parser.add_argument("--num_codes", type=int, default=1024)  # Larger codebook
