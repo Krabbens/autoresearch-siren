@@ -37,6 +37,15 @@ Install [GitHub CLI](https://cli.github.com/) (`gh`), then run `gh auth login` o
 
 `setup.sh` clones **SIREN** next to this repo, downloads the training tarball from [Releases](https://github.com/Krabbens/autoresearch-siren/releases), extracts checkpoints, and creates a venv. To clone SIREN via SSH instead: `USE_SSH_CLONE=1 ./setup.sh`.
 
+**Manual install (no `uv`):** `siren-codec` is a local dependency (`../SIREN`). `pip install -e .` alone will fail. Either use `./setup.sh`, or:
+
+```bash
+pip install -e ../SIREN
+pip install -e .
+```
+
+**With `uv`:** `uv sync` or `uv pip install -e .` uses `[tool.uv.sources]` and resolves `siren-codec` automatically.
+
 ## Quick start
 
 ```bash

@@ -80,8 +80,11 @@ fi
 source .venv/bin/activate
 
 if command -v uv &>/dev/null; then
+    # uv reads [tool.uv.sources] and resolves siren-codec from ../SIREN
     uv pip install -e .
 else
+    # Plain pip ignores uv.sources — install sibling SIREN first, then this project
+    pip install -e "$SIREN_ROOT"
     pip install -e .
 fi
 
