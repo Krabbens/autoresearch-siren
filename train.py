@@ -313,7 +313,7 @@ def main():
     
     # Architecture hyperparameters
     parser.add_argument("--sem_dim", type=int, default=128)
-    parser.add_argument("--pro_dim", type=int, default=128)  # exp22: doubled from 64 for more prosody capacity
+    parser.add_argument("--pro_dim", type=int, default=64)
     parser.add_argument("--spk_dim", type=int, default=256)
     parser.add_argument("--hidden_dim", type=int, default=512)
     
