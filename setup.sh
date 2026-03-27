@@ -71,22 +71,34 @@ else
 fi
 
 echo ""
-echo "--- Step 4: Install Python dependencies ---"
+echo "--- Step 4: uv + Python environment ---"
 cd "$SCRIPT_DIR"
-if [ ! -d ".venv" ]; then
-    echo "  Creating venv..."
-    python3 -m venv .venv
-fi
-source .venv/bin/activate
 
-if command -v uv &>/dev/null; then
-    # uv reads [tool.uv.sources] and resolves siren-codec from ../SIREN
-    uv pip install -e .
-else
-    # Plain pip ignores uv.sources — install sibling SIREN first, then this project
-    pip install -e "$SIREN_ROOT"
-    pip install -e .
-fi
+ensure_uv() {
+    if command -v uv &>/dev/null; then
+        echo "  uv: $(uv --version)"
+        return 0
+    fi
+    echo "  uv not in PATH; installing via Astral installer..."
+    if ! command -v curl &>/dev/null; then
+        echo "ERROR: curl is required to install uv automatically."
+        echo "Install curl, or install uv yourself: https://docs.astral.sh/uv/getting-started/installation/"
+        exit 1
+    fi
+    curl -LsSf https://astral.sh/uv/install.sh | sh
+    # Default install location (see installer output if this fails)
+    export PATH="${HOME}/.local/bin:${PATH}"
+    if ! command -v uv &>/dev/null; then
+        echo "ERROR: uv is still not on PATH. Add ~/.local/bin to PATH and re-run this script."
+        exit 1
+    fi
+    echo "  uv installed: $(uv --version)"
+}
+
+ensure_uv
+
+echo "  Running uv sync (uses uv.lock + ../SIREN via [tool.uv.sources])..."
+uv sync
 
 echo ""
 echo "=== Setup complete! ==="
@@ -95,6 +107,8 @@ echo "Verify with:"
 echo "  cd $SCRIPT_DIR"
 echo "  source .venv/bin/activate"
 echo "  python train.py --help"
+echo "  # or: uv run train.py --help"
 echo ""
 echo "Start training:"
 echo "  python train.py --experiment_name exp22"
+echo "  # or: uv run train.py --experiment_name exp22"

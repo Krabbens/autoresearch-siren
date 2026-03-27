@@ -16,7 +16,7 @@ Override paths with env vars documented in `prepare.py` (`SIREN_ROOT`, `SIREN_DA
 ## Requirements
 
 - **Python ≥ 3.11** (transitive deps e.g. `onnxruntime` need 3.11+ wheels).
-- [uv](https://docs.astral.sh/uv/)
+- [uv](https://docs.astral.sh/uv/) — optional before `./setup.sh`; the script installs it via the official installer if `uv` is not on `PATH` (needs `curl`).
 - One **CUDA** GPU recommended (same as training SIREN).
 
 ## New machine (clone + data + deps)
@@ -35,16 +35,16 @@ Install [GitHub CLI](https://cli.github.com/) (`gh`), then run `gh auth login` o
 ./setup.sh
 ```
 
-`setup.sh` clones **SIREN** next to this repo, downloads the training tarball from [Releases](https://github.com/Krabbens/autoresearch-siren/releases), extracts checkpoints, and creates a venv. To clone SIREN via SSH instead: `USE_SSH_CLONE=1 ./setup.sh`.
+`setup.sh` clones **SIREN** next to this repo, downloads the training tarball from [Releases](https://github.com/Krabbens/autoresearch-siren/releases), extracts checkpoints, ensures **uv** is available (installs it if missing), then runs **`uv sync`** (uses `uv.lock` and `[tool.uv.sources]` for `siren-codec`). To clone SIREN via SSH instead: `USE_SSH_CLONE=1 ./setup.sh`.
 
-**Manual install (no `uv`):** `siren-codec` is a local dependency (`../SIREN`). `pip install -e .` alone will fail. Either use `./setup.sh`, or:
+**Manual install without uv:** `siren-codec` is local (`../SIREN`); plain `pip install -e .` fails unless SIREN is installed first:
 
 ```bash
 pip install -e ../SIREN
 pip install -e .
 ```
 
-**With `uv`:** `uv sync` or `uv pip install -e .` uses `[tool.uv.sources]` and resolves `siren-codec` automatically.
+**With uv (recommended):** `uv sync` resolves `siren-codec` from `[tool.uv.sources]` automatically.
 
 ## Quick start
 
