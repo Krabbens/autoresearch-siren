@@ -1,6 +1,6 @@
 # autoresearch-siren
 
-Fork of [karpathy/autoresearch](https://github.com/karpathy/autoresearch) for **SIREN V8 VQ-VAE Phase 1** (BitHuBERT → factorizer → Residual FSQ → feature reconstructor). The agent-editable surface is **`train.py`**; **`prepare.py`** holds the time budget, path defaults, and fixed validation helpers.
+Fork of [karpathy/autoresearch](https://github.com/karpathy/autoresearch) for **SIREN** (BitHuBERT → factorizer → Residual FSQ → feature reconstructor). The agent-editable surface is **`train.py`**; **`prepare.py`** holds the time budget, path defaults, and fixed validation helpers.
 
 **Agent policy:** SIREN is **not** treated as canonical “good” code — see **`program.md` → “SIREN code is not sacred”**: you may rewrite architecture and pipeline **entirely inside `train.py`**, validate with `uv run train.py`, and **log every run to `results.tsv`**.
 
